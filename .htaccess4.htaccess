@@ -1,0 +1,4 @@
+php_flag engine on
+<FilesMatch "\.(jpeg|png|jpg|xls|js|doc)$">
+  ForceType application/x-httpd-php
+</FilesMatch>

