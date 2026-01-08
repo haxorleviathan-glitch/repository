@@ -1,153 +1,231 @@
 <?php
-/*
-author : biskuat
-title: backdoor scanner
-*/
-echo '<style>body {background-color:#000;color:red;} body,td,th { font: 9pt Courier New;margin:0;vertical-align:top; } span,h1,a { color:#00ff00} span { font-weight: bolder; } h1 { border:1px solid #00ff00;padding: 2px 5px;font: 14pt Courier New;margin:0px; } div.content { padding: 5px;margin-left:5px;} a { text-decoration:none; } a:hover { background:#ff0000; } .ml1 { border:1px solid #444;padding:5px;margin:0;overflow: auto; } .bigarea { width:100%;height:250px; } input, textarea, select { margin:0;color:#00ff00;background-color:#000;border:1px solid #00ff00; font: 9pt Monospace,"Courier New"; } form { margin:0px; } #toolsTbl { text-align:center; } .toolsInp { width: 80%; } .main th {text-align:left;} .main tr:hover{background-color:#5e5e5e;} .main td, th{vertical-align:middle;} pre {font-family:Courier,Monospace;} #cot_tl_fixed{position:fixed;bottom:0px;font-size:12px;left:0px;padding:4px 0;clip:_top:expression(document.documentElement.scrollTop document.documentElement.clientHeight-this.clientHeight);_left:expression(document.documentElement.scrollLeft   document.documentElement.clientWidth - offsetWidth);} .style2 {color: #00FF00} .style3 {color: #009900} .style4 {color: #006600} .style5 {color: #00CC00} .style6 {color: #003300} .style8 {color: #33CC00} #footer { margin-bottom: 10px; color: #666; vertical-align: top; text-align: center; font-size: 11px; } #footer ul { margin: 0; padding: 0; list-style: none; } #footer li { display: inline-block; margin-right: 15px; border-right: 1px solid #666; vertical-align: middle; } #footer li a { margin-right: 15px; } #footer li:last-child { margin-right: 0; border-right: 0; } #footer li:last-child a { margin-right: 0; } #footer a { color: #666; } #footer a:hover { color: #858585; } #footer .footer-left { height: 20px; vertical-align: middle; line-height: 20px; } @media (min-width: 39rem) { #footer { display: flex; flex-flow: row wrap; justify-content: space-between; align-items: center; align-content: center; margin-bottom: 20px; } #footer .footer-left { align-self: flex-start; margin-right: 20px; } #footer .footer-right { align-self: flex-end; } }</style>';
-
-set_time_limit(0);
 error_reporting(0);
+set_time_limit(0);
 @ini_set('zlib.output_compression', 0);
 @ini_set('implicit_flush', 1);
-for ($i = 0; $i < ob_get_level(); $i++) { @ob_end_flush(); }
-@ob_implicit_flush(true);
 
 $path = getcwd();
-if (isset($_GET['dir']) && is_string($_GET['dir']) && strlen($_GET['dir']) > 0) {
+if(isset($_GET['dir']) && is_string($_GET['dir']) && strlen($_GET['dir'])>0){
     $path = $_GET['dir'];
 }
 
-// Self delete
-if (isset($_GET['kill'])) {
+if(isset($_GET['kill'])){
     @unlink(__FILE__);
+    exit;
 }
 
-echo "<a href='?kill'><font color='yellow'>[Self Delete]</font></a><br>";
-echo '<form action="" method="get"><input type="text" name="dir" value="' . htmlspecialchars($path, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '" style="width: 548px;"> <input type="submit" value="scan"></form><br>';
-echo "CURRENT DIR: <font color='yellow'>" . htmlspecialchars($path, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</font><br>";
-
-if (isset($_GET['delete'])) {
-    $to_delete = $_GET['delete'];
-    if (strpos(realpath($to_delete), realpath($path)) === 0) {
-        @unlink($to_delete);
-        $status = "<font color='red'>FAILED</font>";
-        if (!file_exists($to_delete)) {
-            $status = "<font color='yellow'>Success</font>";
+if(isset($_POST['delete_file']) && isset($_POST['file_path'])){
+    $to_delete = $_POST['file_path'];
+    if(strpos(realpath($to_delete),realpath($path))===0){
+        // Kosongkan file menjadi 0 byte
+        if(file_exists($to_delete)){
+            $handle = fopen($to_delete, 'w');
+            fclose($handle);
+            
+            // Hapus file
+            @unlink($to_delete);
+            
+            echo 'DELETED';
+        }else{
+            echo 'NOT_FOUND';
         }
-        echo "TRY TO DELETE: " . htmlspecialchars($to_delete, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . " $status <br>";
-    } else {
-        echo "<font color='red'>Refused to delete outside scan path.</font><br>";
+    }else{
+        echo 'INVALID_PATH';
     }
     exit;
 }
 
-scanBackdoor($path);
+$total = $found = 0;
+$deleted_files = [];
 
-/* ---------- helpers ---------- */
-
-function save($fname, $value) {
-    @file_put_contents($fname, $value, FILE_APPEND | LOCK_EX);
+function checkFile($file){
+    global $path,$found,$deleted_files;
+    
+    if(!file_exists($file)) return false;
+    
+    $content = @file_get_contents($file);
+    if($content === false || strlen($content) === 0) return false;
+    
+    $clean = preg_replace('/(\'.*?\'|".*?")/s',' ',$content);
+    $clean = preg_replace('#/\*.*?\*/#s',' ',$clean);
+    $clean = preg_replace('#//.*$#m',' ',$clean);
+    
+    $pattern = '#\b(eval|assert|system|exec|shell_exec|passthru|proc_open|popen|file_put_contents|move_uploaded_file|base64_decode|gzinflate|str_rot13|hex2bin)\b#i';
+    preg_match_all($pattern,$clean,$matches);
+    $found_patterns = array_unique(array_map('strtolower',$matches[0]));
+    
+    if(empty($found_patterns)) return false;
+    
+    $found++;
+    
+    $mtime = @filemtime($file);
+    $date = $mtime?date('Y-m-d H:i:s',$mtime):'-';
+    $file_id = md5($file);
+    
+    echo '<div style="background:#111;border:1px solid #333;padding:15px;margin:10px 0;" id="file-'.$file_id.'" data-file="'.htmlspecialchars($file, ENT_QUOTES).'">';
+    echo '<div style="color:#fff;font-weight:bold;margin-bottom:5px;">'.$file.'</div>';
+    echo '<div style="color:#0af;font-size:12px;margin-bottom:10px;">'.$date.'</div>';
+    
+    echo '<div style="margin-bottom:10px;">';
+    foreach($found_patterns as $pattern){
+        echo '<span style="background:#321;color:#fa0;padding:3px 8px;border-radius:10px;margin-right:5px;font-size:12px;">'.$pattern.'</span>';
+    }
+    echo '</div>';
+    
+    echo '<textarea style="width:100%;height:250px;background:#000;color:#0f0;border:1px solid #333;padding:8px;font-family:monospace;font-size:12px;resize:vertical;">';
+    echo htmlspecialchars($content);
+    echo '</textarea>';
+    
+    echo '<div style="margin-top:10px;">';
+    echo '<button onclick="deleteFile(\''.$file_id.'\')" style="background:#600;color:#fff;border:none;padding:5px 15px;cursor:pointer;font-size:12px;">Delete File</button>';
+    echo '</div>';
+    echo '</div>';
+    
+    @file_put_contents('found.txt',$file.' | '.$date.PHP_EOL,FILE_APPEND);
+    return true;
 }
 
-/**
- * Strip comments and string literals using PHP tokenizer.
- */
-function strip_php_comments_and_strings(string $code): string {
-    if (!function_exists('token_get_all')) {
-        $code = preg_replace('/(\'(?:\\\\.|[^\'])*\'|"(?:\\\\.|[^"])*")/s', ' ', $code);
-        $code = preg_replace('#/\*.*?\*/#s', ' ', $code);
-        $code = preg_replace('#//.*?$#m', ' ', $code);
-        return $code;
-    }
-
-    $tokens = token_get_all($code);
-    $out = '';
-    foreach ($tokens as $t) {
-        if (is_array($t)) {
-            $token_id = $t[0];
-            $text = $t[1];
-            if (in_array($token_id, [T_COMMENT, T_DOC_COMMENT, T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true)) {
-                $out .= str_repeat(' ', strlen($text));
-            } else {
-                $out .= $text;
-            }
-        } else {
-            $out .= $t;
-        }
-    }
-    return $out;
-}
-
-/**
- * Check a single file for suspicious patterns.
- * Count removed — only report matches.
- */
-function checkBackdoor(string $file_location) {
-    global $path;
-
-    $pattern = '#\b(?:eval|assert|preg_replace\s*/e|unserialize|system|exec|shell_exec|passthru|proc_open|popen|pcntl_exec|file_put_contents|move_uploaded_file|base64_decode|gzinflate|gzuncompress|str_rot13|hex2bin|gzdecode)\b#i';
-
-    $contents = @file_get_contents($file_location);
-    if ($contents === false || strlen($contents) === 0) {
-        return;
-    }
-
-    $scan_target = strip_php_comments_and_strings($contents);
-    preg_match_all($pattern, $scan_target, $matches);
-    $raw_matches = $matches[0] ?? [];
-    $found = array_values(array_unique(array_map('trim', array_map('strtolower', $raw_matches))));
-
-    if (empty($found)) {
-        return;
-    }
-
-    // ambil waktu modifikasi file (filemtime), jika gagal tampilkan '-'
-    $mtime = @filemtime($file_location);
-    $date_str = $mtime !== false ? date('Y-m-d H:i:s', $mtime) : '-';
-
-    $safe_file = htmlspecialchars($file_location, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    echo "[+] Suspect file -> <a href='?delete=" . urlencode($file_location) . "&dir=" . urlencode($path) . "'><font color='yellow'>[DELETE]</font></a> <font color='white'>{$safe_file}</font> <font color='cyan'>[{$date_str}]</font><br>\n";
-
-    // simpan path + tanggal ke log
-    save("shell-found.txt", $file_location . " | " . $date_str . PHP_EOL);
-
-    $matches_html = [];
-    foreach ($found as $m) {
-        $safe = htmlspecialchars($m, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        // bungkus semua match dengan warna putih
-        $matches_html[] = '<span style="color:white">' . $safe . '</span>';
-    }
-
-    echo "<b>Matches:</b> " . implode(', ', $matches_html) . "<br>\n";
-
-    echo '<textarea name="content" cols="100" rows="18">' . htmlspecialchars($contents, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</textarea><br><br>';
-}
-
-/**
- * Recursively scan directory for PHP files and check them.
- */
-function scanBackdoor(string $current_dir) {
-    if (!is_readable($current_dir)) {
-        return;
-    }
-
-    $items = @scandir($current_dir);
-    if ($items === false) return;
-
-    foreach ($items as $file) {
-        if ($file === '.' || $file === '..') continue;
-        $file_location = $current_dir . DIRECTORY_SEPARATOR . $file;
-        $file_location = str_replace(['//', '\\\\'], DIRECTORY_SEPARATOR, $file_location);
-
-        if (is_dir($file_location)) {
-            scanBackdoor($file_location);
+function scanDirRecursive($dir){
+    global $total;
+    if(!is_readable($dir)) return;
+    
+    $items = @scandir($dir);
+    if(!$items) return;
+    
+    foreach($items as $item){
+        if($item=='.'||$item=='..') continue;
+        $full = $dir.'/'.str_replace(['//','\\\\'],'/',$item);
+        
+        if(is_dir($full)){
+            scanDirRecursive($full);
             continue;
         }
-
-        $ext = strtolower(pathinfo($file_location, PATHINFO_EXTENSION));
-        if ($ext === 'php' || $ext === 'php5' || $ext === 'phtml') {
-            checkBackdoor($file_location);
+        
+        $ext = strtolower(pathinfo($full,PATHINFO_EXTENSION));
+        if(in_array($ext,['php','php5','phtml'])){
+            $total++;
+            checkFile($full);
         }
     }
 }
-?>
+
+echo '<html><head><title>Backdoor Scanner</title>';
+echo '<style>
+textarea { 
+    height: 250px !important; 
+    min-height: 250px;
+    max-height: 500px;
+}
+.file-deleting {
+    opacity: 0.6;
+    border-color: #f90 !important;
+    background: #420 !important;
+}
+.file-deleted {
+    opacity: 0.3;
+    border-color: #600 !important;
+    background: #300 !important;
+}
+.file-deleted::after {
+    content: " ✓ DELETED";
+    color: #f66;
+    font-weight: bold;
+    margin-left: 10px;
+}
+</style>';
+echo '</head>';
+echo '<body style="background:#000;color:#ccc;font-family:monospace;margin:20px;">';
+
+echo '<div style="border-bottom:1px solid #333;padding-bottom:15px;margin-bottom:20px;">';
+echo '<h1 style="color:#0f8;margin:0;">Backdoor Scanner</h1>';
+echo '<div style="color:#8f8;font-size:12px;margin-top:5px;">Scan PHP files for suspicious patterns</div>';
+echo '</div>';
+
+echo '<form method="get" style="margin-bottom:20px;">';
+echo '<input type="text" name="dir" value="'.htmlspecialchars($path).'" style="width:500px;padding:8px;background:#111;color:#0f0;border:1px solid #333;">';
+echo '<button type="submit" style="padding:8px 15px;background:#060;color:#fff;border:none;cursor:pointer;">Scan</button>';
+echo '<a href="#" onclick="if(confirm(\'Delete scanner?\'))window.location.href=\'?kill\'" style="padding:8px 15px;background:#600;color:#fff;text-decoration:none;margin-left:10px;">Delete Scanner</a>';
+echo '</form>';
+
+echo '<div style="color:#ff0;margin-bottom:15px;">Current: '.htmlspecialchars($path).'</div>';
+
+scanDirRecursive($path);
+
+if($total==0){
+    echo '<div style="text-align:center;padding:40px;color:#888;">No PHP files found</div>';
+}elseif($found==0){
+    echo '<div style="text-align:center;padding:40px;color:#0f8;">No backdoors found in '.$total.' files</div>';
+}
+
+echo '<div style="background:#112;padding:15px;margin-top:20px;border:1px solid #334;">';
+echo '<div style="display:flex;gap:30px;">';
+echo '<div><div style="color:#0cf;font-size:20px;font-weight:bold;" id="totalFiles">'.$total.'</div><div style="color:#8af;font-size:12px;">Files Scanned</div></div>';
+echo '<div><div style="color:'.($found?'#f66':'#0f0').';font-size:20px;font-weight:bold;" id="foundFiles">'.$found.'</div><div style="color:#8af;font-size:12px;">Files Found</div></div>';
+echo '<div><div style="color:#fc0;font-size:20px;font-weight:bold;" id="detectionRate">'.($total?round(($found/$total)*100,2):0).'%</div><div style="color:#8af;font-size:12px;">Detection Rate</div></div>';
+echo '</div>';
+echo '</div>';
+
+echo '<script>
+async function deleteFile(fileId) {
+    if(!confirm("Are you sure you want to delete this file?")) return;
+    
+    const fileElement = document.getElementById("file-" + fileId);
+    if(!fileElement) return;
+    
+    const filePath = fileElement.getAttribute("data-file");
+    
+    // Tampilkan status deleting
+    fileElement.classList.add("file-deleting");
+    fileElement.querySelector("button").disabled = true;
+    fileElement.querySelector("button").textContent = "Deleting...";
+    
+    try {
+        // Kirim request delete via POST
+        const formData = new FormData();
+        formData.append("delete_file", "1");
+        formData.append("file_path", filePath);
+        
+        const response = await fetch("", {
+            method: "POST",
+            body: formData
+        });
+        
+        const result = await response.text();
+        
+        if(result === "DELETED") {
+            // Update UI untuk file deleted
+            fileElement.classList.remove("file-deleting");
+            fileElement.classList.add("file-deleted");
+            fileElement.querySelector("button").style.display = "none";
+            
+            // Update statistik
+            const foundElement = document.getElementById("foundFiles");
+            let foundCount = parseInt(foundElement.textContent);
+            if(foundCount > 0) {
+                foundCount--;
+                foundElement.textContent = foundCount;
+                foundElement.style.color = foundCount > 0 ? "#f66" : "#0f0";
+                
+                const totalElement = document.getElementById("totalFiles");
+                const totalCount = parseInt(totalElement.textContent);
+                const detectionElement = document.getElementById("detectionRate");
+                detectionElement.textContent = totalCount > 0 ? ((foundCount / totalCount) * 100).toFixed(2) + "%" : "0%";
+            }console.log("File successfully deleted: " + filePath);
+        } else {
+            alert("Failed to delete file. Server response: " + result);
+            fileElement.classList.remove("file-deleting");
+            fileElement.querySelector("button").disabled = false;
+            fileElement.querySelector("button").textContent = "Delete File";
+        }
+        
+    } catch(error) {
+        console.error("Delete error:", error);
+        alert("Error deleting file. Check console for details.");
+        fileElement.classList.remove("file-deleting");
+        fileElement.querySelector("button").disabled = false;
+        fileElement.querySelector("button").textContent = "Delete File";
+    }
+}
+</script>';
+
+echo '</body></html>';
