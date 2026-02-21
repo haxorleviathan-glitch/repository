@@ -114,7 +114,7 @@ header('Expires: 0');
 
 /* ---------- Auth ---------- */
 define('AUTH_USER', 'admin');
-define('AUTH_PASS_HASH', '$2y$12$F88EnTWDrjrHqh47gYqBP.ks5L2yjEd0zy0wy325gfUqjyDrKOVwW'); // pass : 
+define('AUTH_PASS_HASH', '$2y$12$pwMpsJv6XjLEMMXF9swjD.o87HjIXgz9cgp4xVHY7PiKCyZDDpbqq'); // pass : 
 
 /* ---------- Util & Polyfills ---------- */
 function h($s){ return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
