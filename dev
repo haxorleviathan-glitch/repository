@@ -5,7 +5,7 @@
 </head>
 <body>
 <?php
-		$password = 'admin';
+		$password = 'apasihkaliansemua';
 
 		$encrypted_password = md5($password);
 
@@ -46,3 +46,4 @@
 
 </body>
 </html>
+
