@@ -50,7 +50,7 @@ function checkFile($file){
     $clean = preg_replace('#/\*.*?\*/#s',' ',$clean);
     $clean = preg_replace('#//.*$#m',' ',$clean);
     
-    $pattern = '#\b(eval|assert|system|exec|shell_exec|passthru|proc_open|popen|file_put_contents|move_uploaded_file|base64_decode|gzinflate|str_rot13|hex2bin)\b#i';
+    $pattern = '#\b(eval|assert|system|exec|shell_exec|passthru|proc_open|popen|pcntl_exec|expect_popen|w32api_register_function|file_put_contents|move_uploaded_file|file_get_contents|base64_decode|gzinflate|str_rot13|hex2bin|bin2hex)\b#ix';
     preg_match_all($pattern,$clean,$matches);
     $found_patterns = array_unique(array_map('strtolower',$matches[0]));
     
