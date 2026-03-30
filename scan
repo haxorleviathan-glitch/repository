@@ -33,6 +33,17 @@ if(isset($_POST['delete_file']) && isset($_POST['file_path'])){
 
 $total = $found = 0;
 
+function getViewUrl($filePath) {
+    // Cari posisi "public_html" dalam path
+    $pos = strpos($filePath, 'public_html');
+    if ($pos !== false) {
+        // Ambil semua karakter setelah "public_html/"
+        return substr($filePath, $pos + strlen('public_html/'));
+    }
+    // Jika tidak ditemukan public_html, kembalikan path asli
+    return $filePath;
+}
+
 function checkFile($file){
     global $path, $found;
     
@@ -57,9 +68,10 @@ function checkFile($file){
     $date = $mtime ? date('Y-m-d H:i:s', $mtime) : '-';
     
     // Warna kuning terang untuk tanggal (sama dengan warna pattern)
-    $date_color = '#ff9b4a'; // Kuning terang/oranye
+    $date_color = '#ff9b4a';
     
     $file_id = md5($file);
+    $viewPath = getViewUrl($file);
     
     echo '<div class="file-card" id="file-'.$file_id.'" data-file="'.htmlspecialchars($file, ENT_QUOTES).'">';
     echo '<div class="file-header">';
@@ -81,6 +93,7 @@ function checkFile($file){
     echo '</div>';
     
     echo '<div class="file-actions">';
+    echo '<a href="'.htmlspecialchars($viewPath).'" target="_blank" class="btn-view">View</a>';
     echo '<button onclick="deleteFile(\''.$file_id.'\')" class="btn-delete">Delete File</button>';
     echo '</div>';
     echo '</div>';
@@ -304,6 +317,22 @@ echo '<style>
     .file-actions {
         display: flex;
         justify-content: flex-end;
+        gap: 8px;
+    }
+    .btn-view {
+        background: #1f6feb;
+        color: white;
+        border: none;
+        padding: 8px 20px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 500;
+        text-decoration: none;
+        display: inline-block;
+    }
+    .btn-view:hover {
+        background: #388bfd;
     }
     .btn-delete {
         background: #bd2c2c;
@@ -346,6 +375,10 @@ echo '<style>
         border-radius: 20px;
         font-size: 11px;
         font-weight: 600;
+    }
+    .file-deleted .btn-view {
+        pointer-events: none;
+        opacity: 0.5;
     }
 </style>';
 echo '</head>';
@@ -396,9 +429,14 @@ async function deleteFile(fileId) {
     
     fileElement.classList.add("file-deleting");
     const deleteBtn = fileElement.querySelector(".btn-delete");
+    const viewBtn = fileElement.querySelector(".btn-view");
     if(deleteBtn) {
         deleteBtn.disabled = true;
         deleteBtn.textContent = "Deleting...";
+    }
+    if(viewBtn) {
+        viewBtn.style.pointerEvents = "none";
+        viewBtn.style.opacity = "0.5";
     }
     
     try {
@@ -437,6 +475,10 @@ async function deleteFile(fileId) {
                 deleteBtn.disabled = false;
                 deleteBtn.textContent = "Delete File";
             }
+            if(viewBtn) {
+                viewBtn.style.pointerEvents = "auto";
+                viewBtn.style.opacity = "1";
+            }
         }
         
     } catch(error) {
@@ -446,6 +488,10 @@ async function deleteFile(fileId) {
         if(deleteBtn) {
             deleteBtn.disabled = false;
             deleteBtn.textContent = "Delete File";
+        }
+        if(viewBtn) {
+            viewBtn.style.pointerEvents = "auto";
+            viewBtn.style.opacity = "1";
         }
     }
 }
