@@ -3511,7 +3511,7 @@ global $lang, $root_url, $favicon_path;
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<center><div style="width:590px;max-width:100%;"><img src="https://pomf2.lain.la/f/b0sfuyb.jpg">
+<center><div style="width:590px;max-width:100%;"><img src="https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/clay.jpg">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <meta name="description" content="Web based File Manager in PHP, Manage your files efficiently and easily with Clay">
