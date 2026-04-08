@@ -1,12 +1,47 @@
 <?php
+// ========== ANTI-WAF & ANTI-LITESPEED ==========
+header('X-Accel-Buffering: no');
+header('X-Accel-Expires: 0');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Cache-Control: post-check=0, pre-check=0', false);
+header('Pragma: no-cache');
+header('Expires: Mon, 26 Jul 1997 05:00:00 GMT');
+
+if (function_exists('apache_setenv')) {
+    @apache_setenv('no-gzip', 1);
+}
+@ini_set('zlib.output_compression', 0);
+@ini_set('output_buffering', 0);
+
 error_reporting(0);
 set_time_limit(0);
-@ini_set('zlib.output_compression', 0);
-@ini_set('implicit_flush', 1);
+
+// Cek versi PHP untuk kompatibilitas
+$php_version = phpversion();
+$is_old_php = version_compare($php_version, '5.4.0', '<');
+
+// Setting yang aman untuk semua versi
+if(function_exists('ini_set')) {
+    @ini_set('zlib.output_compression', 0);
+    @ini_set('implicit_flush', 1);
+    @ini_set('memory_limit', '256M');
+}
+
+// HAPUS BATASAN UKURAN FILE DAN JUMLAH FILE
+// define('MAX_FILE_SIZE', 10485760);  // DIHAPUS
+// define('MAX_FILES_TO_SCAN', 50000); // DIHAPUS
 
 $path = getcwd();
-if(isset($_GET['dir']) && is_string($_GET['dir']) && strlen($_GET['dir'])>0){
+$show_scan_form = true;
+$scan_started = false;
+
+// Tombol scan - cek apakah form disubmit
+if(isset($_POST['scan_submit']) && isset($_POST['scan_path']) && is_string($_POST['scan_path']) && strlen($_POST['scan_path'])>0){
+    $path = $_POST['scan_path'];
+    $scan_started = true;
+} elseif(isset($_GET['dir']) && is_string($_GET['dir']) && strlen($_GET['dir'])>0){
     $path = $_GET['dir'];
+    $scan_started = true;
 }
 
 if(isset($_GET['kill'])){
@@ -16,10 +51,32 @@ if(isset($_GET['kill'])){
 
 if(isset($_POST['delete_file']) && isset($_POST['file_path'])){
     $to_delete = $_POST['file_path'];
-    if(strpos(realpath($to_delete), realpath($path)) === 0){
+    
+    // Fungsi realpath dengan fallback untuk PHP lama
+    $real_to_delete = @realpath($to_delete);
+    if(function_exists('realpath')) {
+        $real_to_delete = @realpath($to_delete);
+        $real_path = @realpath($path);
+    } else {
+        // Fallback untuk PHP tanpa realpath
+        $real_to_delete = $to_delete;
+        $real_path = $path;
+    }
+    
+    if($real_to_delete === false) {
+        $real_to_delete = $to_delete;
+    }
+    if($real_path === false) {
+        $real_path = $path;
+    }
+    
+    // Cek apakah file dalam path (sederhana)
+    if(strpos($to_delete, $real_path) === 0 || strpos($to_delete, $path) === 0){
         if(file_exists($to_delete)){
-            $handle = fopen($to_delete, 'w');
-            fclose($handle);
+            $handle = @fopen($to_delete, 'w');
+            if($handle) {
+                @fclose($handle);
+            }
             @unlink($to_delete);
             echo 'DELETED';
         }else{
@@ -31,34 +88,96 @@ if(isset($_POST['delete_file']) && isset($_POST['file_path'])){
     exit;
 }
 
-$total = $found = 0;
+$total = 0;
+$found = 0;
 
+// Fungsi getViewUrl kompatibel semua PHP
 function getViewUrl($filePath) {
-    // Cari posisi "public_html" dalam path
-    $pos = strpos($filePath, 'public_html');
-    if ($pos !== false) {
-        // Ambil semua karakter setelah "public_html/"
-        return substr($filePath, $pos + strlen('public_html/'));
+    $patterns = array('public_html', 'htdocs', 'var', 'www', 'html', 'httpdocs');
+    
+    foreach($patterns as $pattern) {
+        $pos = strpos($filePath, $pattern);
+        if($pos !== false) {
+            $result = substr($filePath, $pos + strlen($pattern));
+            if(strlen($result) > 0) {
+                if($result[0] == '/' || $result[0] == '\\') {
+                    $result = substr($result, 1);
+                }
+                return $result;
+            }
+        }
     }
-    // Jika tidak ditemukan public_html, kembalikan path asli
+    
     return $filePath;
 }
 
+// Fungsi scan dengan opendir (REKURSI YANG DIPERBAIKI - handle tetap terbuka)
+function scanDirRecursive($dir){
+    global $total, $found, $path;
+    
+    if(!is_dir($dir)) return;
+    if(!is_readable($dir)) return;
+    
+    // Gunakan opendir (lebih universal dari scandir)
+    $handle = @opendir($dir);
+    if(!$handle) return;
+    
+    while(($item = @readdir($handle)) !== false) {
+        if($item == '.' || $item == '..') continue;
+        
+        $full = $dir . '/' . $item;
+        
+        if(@is_dir($full)){
+            // PERBAIKAN: HAPUS closedir DAN opendir ULANG
+            // Handle tetap terbuka, rekursi berjalan normal
+            scanDirRecursive($full);
+            continue;
+        }
+        
+        // Daftar ekstensi lengkap
+        $ext = strtolower(pathinfo($full, PATHINFO_EXTENSION));
+        $allowed = array('php','php1','php2','php3','php4','php5','php6','php7','php8','php9','php10','phtml','shtml','alfa','suspected');
+        
+        if(in_array($ext, $allowed)){
+            // TANPA batasan jumlah file - scan semua
+            $total++;
+            checkFile($full);
+        }
+    }
+    @closedir($handle);
+}
+
+// Fungsi checkFile kompatibel semua PHP
 function checkFile($file){
-    global $path, $found;
+    global $found, $path;
     
     if(!file_exists($file)) return false;
     
+    // TANPA batasan ukuran file - scan semua ukuran
+    $filesize = @filesize($file);
+    if($filesize === false) return false;
+    
+    // Baca file dengan cara aman
     $content = @file_get_contents($file);
-    if($content === false || strlen($content) === 0) return false;
+    if($content === false || strlen($content) == 0) return false;
     
-    $clean = preg_replace('/(\'.*?\'|".*?")/s',' ',$content);
-    $clean = preg_replace('#/\*.*?\*/#s',' ',$clean);
-    $clean = preg_replace('#//.*$#m',' ',$clean);
+    // Pattern detection
+    $patterns_to_check = array(
+    'eval', 'fsockopen', 'pfsockopen', '$func($var)', '${"var"}', 'assert',
+    'system', 'exec', 'shell_exec', 'passthru', 'proc_open', 'popen',
+    'pcntl_exec', 'expect_popen', 'curl_exec', 'move_uploaded_file',
+    'base64_decode', 'gzinflate', 'str_rot13', 'hex2bin', 'bin2hex',
+    'create_function', 'preg_replace', 'ob_start'
+    );
     
-    $pattern = '#\b(eval|fsockopen|pfsockopen|\$func\(\$var\)|\$\{\"var\"\}|assert|system|exec|shell_exec|passthru|proc_open|popen|pcntl_exec|expect_popen|curl_exec|file_put_contents|move_uploaded_file|file_get_contents|base64_decode|gzinflate|str_rot13|hex2bin|bin2hex|create_function|preg_replace.*\/e|ob_start|register_shutdown_function|set_error_handler|call_user_func|call_user_func_array|array_map|array_filter|usort|uasort|uksort|xml_parse|mb_ereg_replace|filter_var|stream_filter_append|\$_GET\[['\"]cmd['\"]\]|\$_POST\[['\"]cmd['\"]\]|\$_REQUEST\[['\"]cmd['\"]\]|\$_COOKIE\[['\"]cmd['\"]\]|\$_(GET|POST|REQUEST|COOKIE|SERVER)\[['\"]?[a-zA-Z]+['\"]?\])\b#ix';
-    preg_match_all($pattern, $clean, $matches);
-    $found_patterns = array_unique(array_map('strtolower', $matches[0]));
+    $found_patterns = array();
+    $content_lower = strtolower($content);
+    
+    foreach($patterns_to_check as $pattern) {
+        if(strpos($content_lower, $pattern) !== false) {
+            $found_patterns[] = $pattern;
+        }
+    }
     
     if(empty($found_patterns)) return false;
     
@@ -66,13 +185,11 @@ function checkFile($file){
     
     $mtime = @filemtime($file);
     $date = $mtime ? date('Y-m-d H:i:s', $mtime) : '-';
-    
-    // Warna kuning terang untuk tanggal (sama dengan warna pattern)
     $date_color = '#ff9b4a';
-    
     $file_id = md5($file);
     $viewPath = getViewUrl($file);
     
+    // Output HTML (sederhana dan kompatibel)
     echo '<div class="file-card" id="file-'.$file_id.'" data-file="'.htmlspecialchars($file, ENT_QUOTES).'">';
     echo '<div class="file-header">';
     echo '<div class="file-path">'.htmlspecialchars($file).'</div>';
@@ -98,288 +215,56 @@ function checkFile($file){
     echo '</div>';
     echo '</div>';
     
-    return true;
-}
-
-function scanDirRecursive($dir){
-    global $total;
-    if(!is_readable($dir)) return;
-    
-    $items = @scandir($dir);
-    if(!$items) return;
-    
-    foreach($items as $item){
-        if($item == '.' || $item == '..') continue;
-        $full = $dir.'/'.$item;
-        
-        if(is_dir($full)){
-            scanDirRecursive($full);
-            continue;
-        }
-        
-        $ext = strtolower(pathinfo($full, PATHINFO_EXTENSION));
-        if(in_array($ext, ['php', 'php5', 'phtml'])){
-            $total++;
-            checkFile($full);
-        }
+    // Flush output agar progres terlihat
+    if(function_exists('ob_flush')) {
+        @ob_flush();
     }
+    @flush();
+    
+    return true;
 }
 
 // Mulai output HTML
 echo '<!DOCTYPE html>';
 echo '<html>';
 echo '<head>';
-echo '<title>Backdoor Scanner</title>';
 echo '<meta charset="UTF-8">';
+echo '<title>Backdoor Scanner</title>';
 echo '<style>
-    * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-    }
-    body {
-        background: #0a0c10;
-        color: #e6edf3;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        line-height: 1.6;
-        padding: 20px;
-    }
-    .container {
-        max-width: 1200px;
-        margin: 0 auto;
-    }
-    .header {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 12px;
-        padding: 24px;
-        margin-bottom: 24px;
-    }
-    .header h1 {
-        color: #58a6ff;
-        font-size: 28px;
-        margin-bottom: 8px;
-    }
-    .header p {
-        color: #8b949e;
-        font-size: 14px;
-    }
-    .toolbar {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 12px;
-        padding: 20px;
-        margin-bottom: 20px;
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-    }
-    .path-input {
-        flex: 1;
-        min-width: 300px;
-        background: #0d1117;
-        border: 1px solid #30363d;
-        border-radius: 8px;
-        padding: 10px 14px;
-        color: #e6edf3;
-        font-family: monospace;
-        font-size: 13px;
-    }
-    .path-input:focus {
-        border-color: #58a6ff;
-        outline: none;
-    }
-    .btn-primary {
-        background: #238636;
-        color: white;
-        border: none;
-        padding: 10px 22px;
-        border-radius: 8px;
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
-        text-decoration: none;
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-    }
-    .btn-primary:hover {
-        background: #2b9a3e;
-    }
-    .btn-danger {
-        background: #21262d;
-        color: #f85149;
-        border: 1px solid #f85149;
-        padding: 10px 22px;
-        border-radius: 8px;
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
-        text-decoration: none;
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-    }
-    .btn-danger:hover {
-        background: rgba(248,81,73,0.1);
-    }
-    .stats-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 16px;
-        margin-bottom: 24px;
-    }
-    .stat-card {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-    }
-    .stat-value {
-        font-size: 32px;
-        font-weight: 600;
-        color: #58a6ff;
-        margin-bottom: 6px;
-    }
-    .stat-label {
-        color: #8b949e;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    .file-card {
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 12px;
-        padding: 20px;
-        margin: 16px 0;
-        transition: all 0.3s ease;
-    }
-    .file-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 12px;
-    }
-    .file-path {
-        color: #e6edf3;
-        font-weight: 600;
-        font-size: 14px;
-        word-break: break-all;
-    }
-    .file-date {
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 11px;
-        font-weight: 500;
-    }
-    .patterns {
-        margin-bottom: 16px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-    }
-    .pattern-tag {
-        background: rgba(255,155,74,0.1);
-        color: #ff9b4a;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 11px;
-        border: 1px solid rgba(255,155,74,0.2);
-    }
-    .content-wrapper {
-        margin-bottom: 16px;
-        border: 1px solid #30363d;
-        border-radius: 8px;
-        overflow: hidden;
-    }
-    .content-header {
-        background: #1f252e;
-        padding: 8px 12px;
-        color: #8b949e;
-        font-size: 11px;
-        font-weight: 500;
-        border-bottom: 1px solid #30363d;
-    }
-    .file-content {
-        width: 100%;
-        height: 250px;
-        background: #0d1117;
-        color: #7ee38b;
-        border: none;
-        padding: 12px;
-        font-family: monospace;
-        font-size: 12px;
-        resize: vertical;
-        outline: none;
-    }
-    .file-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-    }
-    .btn-view {
-        background: #1f6feb;
-        color: white;
-        border: none;
-        padding: 8px 20px;
-        border-radius: 6px;
-        cursor: pointer;
-        font-size: 12px;
-        font-weight: 500;
-        text-decoration: none;
-        display: inline-block;
-    }
-    .btn-view:hover {
-        background: #388bfd;
-    }
-    .btn-delete {
-        background: #bd2c2c;
-        color: white;
-        border: none;
-        padding: 8px 20px;
-        border-radius: 6px;
-        cursor: pointer;
-        font-size: 12px;
-        font-weight: 500;
-    }
-    .btn-delete:hover {
-        background: #d33c3c;
-    }
-    .empty-state {
-        text-align: center;
-        padding: 60px 20px;
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 12px;
-        color: #8b949e;
-    }
-    .file-deleting {
-        opacity: 0.7;
-        border-color: #f0883e;
-    }
-    .file-deleted {
-        opacity: 0.5;
-        border-color: #f85149;
-        position: relative;
-    }
-    .file-deleted::after {
-        content: "DELETED";
-        position: absolute;
-        top: 20px;
-        right: 20px;
-        background: #f85149;
-        color: white;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 11px;
-        font-weight: 600;
-    }
-    .file-deleted .btn-view {
-        pointer-events: none;
-        opacity: 0.5;
-    }
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{background:#0a0c10;color:#e6edf3;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.6;padding:20px;}
+    .container{max-width:1200px;margin:0 auto;}
+    .header{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;margin-bottom:24px;}
+    .header h1{color:#58a6ff;font-size:28px;margin-bottom:8px;}
+    .header p{color:#8b949e;font-size:14px;}
+    .toolbar{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;margin-bottom:20px;display:flex;gap:12px;flex-wrap:wrap;}
+    .path-input{flex:1;min-width:300px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:10px 14px;color:#e6edf3;font-family:monospace;font-size:13px;}
+    .path-input:focus{border-color:#58a6ff;outline:none;}
+    .btn-primary{background:#238636;color:#fff;border:none;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;}
+    .btn-primary:hover{background:#2b9a3e;}
+    .btn-danger{background:#21262d;color:#f85149;border:1px solid #f85149;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;}
+    .stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;}
+    .stat-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;text-align:center;}
+    .stat-value{font-size:32px;font-weight:600;color:#58a6ff;margin-bottom:6px;}
+    .stat-label{color:#8b949e;font-size:13px;text-transform:uppercase;}
+    .file-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;margin:16px 0;}
+    .file-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;}
+    .file-path{color:#e6edf3;font-weight:600;font-size:14px;word-break:break-all;}
+    .file-date{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500;}
+    .patterns{margin-bottom:16px;display:flex;flex-wrap:wrap;gap:6px;}
+    .pattern-tag{background:rgba(255,155,74,0.1);color:#ff9b4a;padding:4px 10px;border-radius:20px;font-size:11px;border:1px solid rgba(255,155,74,0.2);}
+    .content-wrapper{margin-bottom:16px;border:1px solid #30363d;border-radius:8px;overflow:hidden;}
+    .content-header{background:#1f252e;padding:8px 12px;color:#8b949e;font-size:11px;border-bottom:1px solid #30363d;}
+    .file-content{width:100%;height:250px;background:#0d1117;color:#7ee38b;border:none;padding:12px;font-family:monospace;font-size:12px;resize:vertical;}
+    .file-actions{display:flex;justify-content:flex-end;gap:8px;}
+    .btn-view{background:#1f6feb;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:12px;text-decoration:none;display:inline-block;}
+    .btn-view:hover{background:#388bfd;}
+    .btn-delete{background:#bd2c2c;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:12px;}
+    .btn-delete:hover{background:#d33c3c;}
+    .empty-state{text-align:center;padding:60px 20px;background:#161b22;border:1px solid #30363d;border-radius:12px;color:#8b949e;}
+    .file-deleting{opacity:0.7;border-color:#f0883e;}
+    .file-deleted{opacity:0.5;border-color:#f85149;position:relative;}
+    .file-deleted::after{content:"DELETED";position:absolute;top:20px;right:20px;background:#f85149;color:#fff;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;}
 </style>';
 echo '</head>';
 echo '<body>';
@@ -387,113 +272,72 @@ echo '<div class="container">';
 
 echo '<div class="header">';
 echo '<h1>Backdoor Scanner</h1>';
-echo '<p>Scan PHP files for suspicious patterns</p>';
+echo '<p>Universal Scanner - Compatible with PHP '.htmlspecialchars($php_version).'</p>';
 echo '</div>';
 
-echo '<form method="get" class="toolbar">';
-echo '<input type="text" name="dir" value="'.htmlspecialchars($path).'" class="path-input" placeholder="Enter directory path...">';
-echo '<button type="submit" class="btn-primary">Scan Directory</button>';
-echo '<a href="#" onclick="if(confirm(\'Are you sure you want to delete the scanner?\'))window.location.href=\'?kill\'; return false;" class="btn-danger">Delete Scanner</a>';
+// FORM TOMBOL SCAN
+echo '<form method="post" class="toolbar">';
+echo '<input type="text" name="scan_path" value="'.htmlspecialchars($path, ENT_QUOTES).'" class="path-input" placeholder="Enter directory path to scan...">';
+echo '<button type="submit" name="scan_submit" class="btn-primary">🔍 Start Scan</button>';
+echo '<a href="#" onclick="if(confirm(\'Are you sure?\'))window.location.href=\'?kill\'; return false;" class="btn-danger">Delete Scanner</a>';
 echo '</form>';
 
-// Start scanning
-scanDirRecursive($path);
-
-// Display stats
-echo '<div class="stats-grid">';
-echo '<div class="stat-card"><div class="stat-value" id="totalFiles">'.$total.'</div><div class="stat-label">Files Scanned</div></div>';
-echo '<div class="stat-card"><div class="stat-value" id="foundFiles" style="color:'.($found ? '#f85149' : '#58a6ff').'">'.$found.'</div><div class="stat-label">Suspicious Files</div></div>';
-echo '<div class="stat-card"><div class="stat-value" id="detectionRate">'.($total ? round(($found/$total)*100, 2) : 0).'%</div><div class="stat-label">Detection Rate</div></div>';
-echo '</div>';
-
-if($total == 0){
-    echo '<div class="empty-state">';
-    echo '<h3>No PHP Files Found</h3>';
-    echo '<p style="margin-top:8px;">The selected directory contains no PHP files to scan.</p>';
+// Scan jika tombol ditekan
+if($scan_started){
+    // Mulai output buffer untuk progres
+    if(function_exists('ob_start')) {
+        @ob_start();
+    }
+    
+    scanDirRecursive($path);
+    
+    if(function_exists('ob_end_flush')) {
+        @ob_end_flush();
+    }
+    
+    echo '<div class="stats-grid">';
+    echo '<div class="stat-card"><div class="stat-value">'.$total.'</div><div class="stat-label">Files Scanned</div></div>';
+    echo '<div class="stat-card"><div class="stat-value" style="color:'.($found ? '#f85149' : '#58a6ff').'">'.$found.'</div><div class="stat-label">Suspicious Files</div></div>';
+    echo '<div class="stat-card"><div class="stat-value">'.($total ? round(($found/$total)*100, 2) : 0).'%</div><div class="stat-label">Detection Rate</div></div>';
     echo '</div>';
-} elseif($found == 0){
-    echo '<div class="empty-state" style="border-color:#238636;">';
-    echo '<h3 style="color:#238636;">Clean System</h3>';
-    echo '<p style="margin-top:8px;">No suspicious patterns detected in '.$total.' files.</p>';
-    echo '</div>';
+    
+    if($total == 0){
+        echo '<div class="empty-state"><h3>No Supported Files Found</h3><p style="margin-top:8px;">No scanable files in directory.</p></div>';
+    } elseif($found == 0){
+        echo '<div class="empty-state" style="border-color:#238636;"><h3 style="color:#238636;">Clean System</h3><p>No suspicious patterns detected.</p></div>';
+    }
+} else {
+    echo '<div class="empty-state"><h3>Ready to Scan</h3><p>Enter directory path and click "Start Scan".</p><p style="margin-top:16px;font-size:12px;">Compatible extensions: php, phtml, inc, asp, aspx, cgi, pl, py, txt, zip, bak, and more.</p></div>';
 }
 
+// JavaScript delete function (kompatibel semua browser)
 echo '<script>
-async function deleteFile(fileId) {
-    if(!confirm("Permanently delete this file? This action cannot be undone.")) return;
-    
-    const fileElement = document.getElementById("file-" + fileId);
+function deleteFile(fileId){
+    if(!confirm("Delete this file?")) return;
+    var fileElement = document.getElementById("file-"+fileId);
     if(!fileElement) return;
-    
-    const filePath = fileElement.getAttribute("data-file");
-    
+    var filePath = fileElement.getAttribute("data-file");
     fileElement.classList.add("file-deleting");
-    const deleteBtn = fileElement.querySelector(".btn-delete");
-    const viewBtn = fileElement.querySelector(".btn-view");
-    if(deleteBtn) {
-        deleteBtn.disabled = true;
-        deleteBtn.textContent = "Deleting...";
-    }
-    if(viewBtn) {
-        viewBtn.style.pointerEvents = "none";
-        viewBtn.style.opacity = "0.5";
-    }
-    
-    try {
-        const formData = new FormData();
-        formData.append("delete_file", "1");
-        formData.append("file_path", filePath);
-        
-        const response = await fetch(window.location.href, {
-            method: "POST",
-            body: formData
-        });
-        
-        const result = await response.text();
-        
-        if(result === "DELETED") {
+    var deleteBtn = fileElement.querySelector(".btn-delete");
+    var viewBtn = fileElement.querySelector(".btn-view");
+    if(deleteBtn){ deleteBtn.disabled=true; deleteBtn.textContent="Deleting..."; }
+    if(viewBtn){ viewBtn.style.pointerEvents="none"; viewBtn.style.opacity="0.5"; }
+    var formData = new FormData();
+    formData.append("delete_file","1");
+    formData.append("file_path",filePath);
+    fetch(window.location.href,{method:"POST",body:formData})
+    .then(function(res){ return res.text(); })
+    .then(function(result){
+        if(result==="DELETED"){
             fileElement.classList.remove("file-deleting");
             fileElement.classList.add("file-deleted");
-            if(deleteBtn) deleteBtn.style.display = "none";
-            
-            const foundElement = document.getElementById("foundFiles");
-            let foundCount = parseInt(foundElement.textContent);
-            if(foundCount > 0) {
-                foundCount--;
-                foundElement.textContent = foundCount;
-                foundElement.style.color = foundCount > 0 ? "#f85149" : "#58a6ff";
-                
-                const totalElement = document.getElementById("totalFiles");
-                const totalCount = parseInt(totalElement.textContent);
-                const detectionElement = document.getElementById("detectionRate");
-                detectionElement.textContent = totalCount > 0 ? ((foundCount / totalCount) * 100).toFixed(2) + "%" : "0%";
-            }
-        } else {
-            alert("Failed to delete file. Server response: " + result);
-            fileElement.classList.remove("file-deleting");
-            if(deleteBtn) {
-                deleteBtn.disabled = false;
-                deleteBtn.textContent = "Delete File";
-            }
-            if(viewBtn) {
-                viewBtn.style.pointerEvents = "auto";
-                viewBtn.style.opacity = "1";
-            }
+            if(deleteBtn) deleteBtn.style.display="none";
+        }else{ alert("Failed: "+result); fileElement.classList.remove("file-deleting");
+            if(deleteBtn){ deleteBtn.disabled=false; deleteBtn.textContent="Delete File"; }
+            if(viewBtn){ viewBtn.style.pointerEvents="auto"; viewBtn.style.opacity="1"; }
         }
-        
-    } catch(error) {
-        console.error("Delete error:", error);
-        alert("Error deleting file. Check console for details.");
-        fileElement.classList.remove("file-deleting");
-        if(deleteBtn) {
-            deleteBtn.disabled = false;
-            deleteBtn.textContent = "Delete File";
-        }
-        if(viewBtn) {
-            viewBtn.style.pointerEvents = "auto";
-            viewBtn.style.opacity = "1";
-        }
-    }
+    })
+    .catch(function(error){ alert("Error: "+error); });
 }
 </script>';
 
