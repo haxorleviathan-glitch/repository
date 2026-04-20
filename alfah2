@@ -194,7 +194,7 @@ function is_logged_in() {
 // Check if the password is submitted and correct
 if (isset($_POST["password"])) {
     $entered_password = $_POST["password"];
-    $hashed_password = "7da624022b342aef3c2e7a9ed3b6cc33";
+    $hashed_password = "bec5acd6647cf2f356aef6efbb27311c";
     if (md5($entered_password) === $hashed_password) {
         $_SESSION["logged_in"] = true;
         $_SESSION["coki"] = "asu";
