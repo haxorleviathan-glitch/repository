@@ -79,7 +79,7 @@ if (is_logged_in()) {
   justify-content: center;
   align-items: center;
   color: rgb(0, 0, 0);
-  background: url('https://i.pinimg.com/originals/00/21/b2/0021b28a0873eee420317ca20abc57ff.gif') no-repeat center center fixed;
+  background: url('https://giffiles.alphacoders.com/221/221968.gif') no-repeat center center fixed;
   background-size: 50rem;
   font-family: Arial, sans-serif;
   }
