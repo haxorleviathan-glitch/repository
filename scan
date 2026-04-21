@@ -163,11 +163,12 @@ function checkFile($file){
     
     // Pattern detection
     $patterns_to_check = array(
-    'eval', 'fsockopen', 'pfsockopen', '$func($var)', '${"var"}', 'assert',
-    'system', 'exec', 'shell_exec', 'passthru', 'proc_open', 'popen',
-    'pcntl_exec', 'expect_popen', 'curl_exec', 'move_uploaded_file',
-    'base64_decode', 'gzinflate', 'str_rot13', 'hex2bin', 'bin2hex',
-    'create_function', 'preg_replace', 'ob_start'
+    'assert', 'system', 'exec', 'shell_exec', 'passthru', 'proc_open', 'popen',
+    'pcntl_exec', 'eval', 'create_function', 'preg_replace', 'base64_decode',
+    'gzinflate', 'gzuncompress', 'gzdecode', 'str_rot13', 'hex2bin', 'bin2bin',
+    'file_get_contents', 'file_put_contents', 'move_uploaded_file', 'curl_exec',
+    'curl_init', 'fsockopen', 'pfsockopen', 'stream_socket_client', 'socket_create',
+    '$_FILES', '$_REQUEST', '$_GET', '$_POST'
     );
     
     $found_patterns = array();
